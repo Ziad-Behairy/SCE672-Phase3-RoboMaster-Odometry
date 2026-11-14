@@ -2,7 +2,7 @@
 """Turn the 8-10 trial logs into the presentation figures, table and statistics. No ROS needed.
 
     python3 scripts/analyze_trials.py                      # real trials in results/trials
-    python3 scripts/analyze_trials.py --trials results/_demo/trials --out results/_demo   # simulated
+    python3 scripts/analyze_trials.py --trials results/bearing_only --out results/bearing_only --label "(bearing only)"
 
 Reads   <trials>/trial_XX_*/summary.json (+ steps.csv); only trials with d_meas and valid = true.
         If a trial number was run more than once, the newest folder is used.
@@ -71,8 +71,8 @@ def load_steps(folder):
             try:
                 vals.append(float(r[key]))
             except ValueError:
-                vals.append(np.nan if key != 'state' else r[key])
-        cols[key] = np.array(vals, dtype=object if key == 'state' else float)
+                vals.append(np.nan if key != 'mode' else r[key])
+        cols[key] = np.array(vals, dtype=object if key == 'mode' else float)
     return cols
 
 
@@ -188,11 +188,11 @@ def save(fig, out, name):
     plt.close(fig)
 
 
-def title_note(sim):
-    return '  [SIMULATED DATA]' if sim else ''
+def title_note(label):
+    return f'  {label}' if label else ''
 
 
-def fig_scatter(trials, st, out, sim):
+def fig_scatter(trials, st, out, label):
     """Deliverable 6a: estimated vs measured final distance, one dot per trial, ±2σ from P."""
     d_est = np.array([s['d_est_final'] for s in trials])
     d_meas = np.array([s['d_meas'] for s in trials])
@@ -213,7 +213,7 @@ def fig_scatter(trials, st, out, sim):
     ax.set_xlabel('measured final distance, tape (m)')
     ax.set_ylabel('estimated final distance, EKF (m)')
     k = st['ekf']
-    ax.set_title('Estimated vs measured final distance' + title_note(sim))
+    ax.set_title('Estimated vs measured final distance' + title_note(label))
     ax.text(0.03, 0.97, f'MAE {100 * k["mae"]:.2f} cm   bias {100 * k["mean_error_bias"]:+.2f} cm\n'
             f'σ {100 * k["std_sample"]:.2f} cm   range {100 * k["range_of_errors"]:.2f} cm',
             transform=ax.transAxes, va='top', fontsize=9, color=INK)
@@ -221,7 +221,7 @@ def fig_scatter(trials, st, out, sim):
     save(fig, out, 'fig1_scatter_estimated_vs_measured')
 
 
-def fig_errors(trials, st, out, sim):
+def fig_errors(trials, st, out, label):
     """Deliverable 6b: final distance error per trial, with mean, ±σ and the two single-sensor baselines."""
     n = np.array([s['trial'] for s in trials])
     e = 100 * np.array([s['d_est_final'] - s['d_meas'] for s in trials])
@@ -244,24 +244,24 @@ def fig_errors(trials, st, out, sim):
     ax.set_xticks(n)
     ax.set_xlabel('trial')
     ax.set_ylabel('final distance error  e = d_est − d_meas (cm)')
-    ax.set_title('Final distance estimation error per trial' + title_note(sim))
+    ax.set_title('Final distance estimation error per trial' + title_note(label))
     ax.legend(loc='upper left', bbox_to_anchor=(1.0, 1.0), fontsize=8)
     save(fig, out, 'fig2_error_per_trial')
 
 
-def fig_time(trials, out, sim):
+def fig_time(trials, out, label):
     """Distance to the tag during each trial: EKF vs camera vs odometry alone (role of prediction/correction)."""
     fig, ax = plt.subplots(figsize=(8, 4.6))
     for i, s in enumerate(trials):
         c = load_steps(s['_dir'])
-        drive = np.where(c['state'] != 'WAITING')[0]
+        drive = np.where(c['mode'] != 'WAITING')[0]
         if len(drive) == 0:
             continue
         t = c['t'] - c['t'][drive[0]]
         first = i == 0
         ax.plot(t, c['d_odom_only'], color=C_ODOM, lw=1, alpha=0.6, label=EST_NAMES['odom'] if first else None)
         ok = c['tag_new'] == 1
-        ax.scatter(t[ok], c['tag_d'][ok], s=5, color=C_CAM, alpha=0.35, lw=0, label=EST_NAMES['cam'] if first else None)
+        ax.scatter(t[ok], c['tag_range'][ok], s=5, color=C_CAM, alpha=0.35, lw=0, label=EST_NAMES['cam'] if first else None)
         ax.plot(t, c['d_est'], color=C_EKF, lw=1.5, alpha=0.9, label=EST_NAMES['ekf'] if first else None)
     stop = trials[0].get('stop_distance')
     if stop is not None:
@@ -269,17 +269,17 @@ def fig_time(trials, out, sim):
     ax.set_xlim(left=-2)
     ax.set_xlabel('time from drive start (s)')
     ax.set_ylabel('distance chassis front → tag (m)')
-    ax.set_title(f'Distance to the tag, all {len(trials)} trials' + title_note(sim))
+    ax.set_title(f'Distance to the tag, all {len(trials)} trials' + title_note(label))
     ax.legend(loc='upper right', fontsize=8, markerscale=3)
     save(fig, out, 'fig3_distance_vs_time')
 
 
-def fig_uncertainty(trials, out, sim):
+def fig_uncertainty(trials, out, label):
     """P at work: the EKF's 1σ distance uncertainty grows while predicting and shrinks at each camera update."""
     fig, ax = plt.subplots(figsize=(8, 4.2))
     for i, s in enumerate(trials):
         c = load_steps(s['_dir'])
-        drive = np.where(c['state'] != 'WAITING')[0]
+        drive = np.where(c['mode'] != 'WAITING')[0]
         if len(drive) == 0:
             continue
         t = c['t'] - c['t'][drive[0]]
@@ -288,12 +288,12 @@ def fig_uncertainty(trials, out, sim):
     ax.set_ylim(bottom=0)
     ax.set_xlabel('time from drive start (s)')
     ax.set_ylabel('1σ distance uncertainty (cm)')
-    ax.set_title('How sure the EKF is: σ_d = √(J P J^T)' + title_note(sim))
+    ax.set_title('How sure the EKF is: σ_d = √(J P J^T)' + title_note(label))
     ax.legend(loc='upper right', fontsize=8)
     save(fig, out, 'fig4_ekf_uncertainty')
 
 
-def fig_breakdown(st, out, sim):
+def fig_breakdown(st, out, label):
     """Deliverable 7 visual: MAE, |bias|, σ, range and RMSE for EKF vs the single-sensor baselines."""
     keys = [k for k in ('ekf', 'cam', 'odom') if st.get(k)]
     metrics = [('mae', 'MAE'), ('mean_error_bias', '|bias|'), ('std_sample', 'σ'), ('range_of_errors', 'range'),
@@ -310,7 +310,7 @@ def fig_breakdown(st, out, sim):
     ax.set_xticks(x, [label for _, label in metrics])
     ax.set_ylabel('cm')
     ax.grid(axis='x', visible=False)
-    ax.set_title('Error statistics: prediction + correction vs one sensor alone' + title_note(sim))
+    ax.set_title('Error statistics: prediction + correction vs one sensor alone' + title_note(label))
     ax.legend(fontsize=8)
     save(fig, out, 'fig5_statistics_breakdown')
 
@@ -320,24 +320,25 @@ def main():
     ap.add_argument('--trials', default=str(ROOT / 'results' / 'trials'))
     ap.add_argument('--out', default=str(ROOT / 'results'))
     ap.add_argument('--include-invalid', action='store_true', help='also use trials stopped by a safety brake')
+    ap.add_argument('--label', default='', help='text added to every figure title, e.g. "(bearing only)"')
     args = ap.parse_args()
     trials, skipped = load_trials(args.trials, args.include_invalid)
     for msg in skipped:
         print('skipped', msg)
     if not trials:
         raise SystemExit(f'No measured trials in {args.trials}')
-    sim = any(s.get('simulated') for s in trials)
+    label = args.label
     out = Path(args.out)
     style()
     st = compute(trials)
     write_tables(trials, st, out)
-    fig_scatter(trials, st, out, sim)
-    fig_errors(trials, st, out, sim)
-    fig_time(trials, out, sim)
-    fig_uncertainty(trials, out, sim)
-    fig_breakdown(st, out, sim)
+    fig_scatter(trials, st, out, label)
+    fig_errors(trials, st, out, label)
+    fig_time(trials, out, label)
+    fig_uncertainty(trials, out, label)
+    fig_breakdown(st, out, label)
     print((out / 'summary_table.md').read_text(encoding='utf-8'))
-    print(f'Figures in {out / "figures"}' + ('   (SIMULATED DATA)' if sim else ''))
+    print(f'Figures in {out / "figures"}')
 
 
 if __name__ == '__main__':

@@ -6,7 +6,7 @@ Repository: **SCE672-Phase3-RoboMaster-Odometry** (public). Link for the report/
 ```
 src/rm_odom_ekf/      ROS 2 package (EKF, controller, detector, node, logger, tests)
 theory/               equations, formula → line map, odometry role, spec PDF
-scripts/              add_measurement, analyze_trials, calibrate_range, simulate_trials, formula_lines
+scripts/              add_measurement, analyze_trials, calibrate_range, formula_lines
 results/              trials/ (one folder per trial), figures/, summary tables
 docs/                 code explanation guide, robot runbook, video checklist, this file
 ```
@@ -41,5 +41,4 @@ git pull
 
 ## Rules
 - Commit `results/trials/*` exactly as the robot wrote them. Only `add_measurement.py` edits a summary.
-- `results/_demo/` (simulated) is in `.gitignore` and never goes into the report.
 - Commit after each session, so the history shows when each trial happened.

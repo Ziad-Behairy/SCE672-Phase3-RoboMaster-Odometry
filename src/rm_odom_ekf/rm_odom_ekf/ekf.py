@@ -1,167 +1,186 @@
-"""5-state Extended Kalman Filter for the RoboMaster EP Core (SCE-672 Project Phase 3).
+"""Extended Kalman filter that tracks the RoboMaster while it drives toward the tag.
 
-Pure maths: no ROS, so it runs (and is unit tested) on Windows too.
+What the filter keeps track of (5 numbers, room frame):
+    x, y        position of the robot centre in metres
+    heading     where the nose points, radians, measured CCW from the room x axis
+    speed       forward speed in m/s
+    turn_rate   yaw rate in rad/s
 
-    state        x = [px, py, theta, v, omega]   room frame, metres and radians
-    input        u = [a, alpha]                   linear and angular acceleration
-    odometry     z = [v, omega]                   from /odom            (Lecture 11B)
-    camera tag   z = [d, phi]                     range and bearing     (Lecture 12A)
+It predicts with a simple unicycle model (Lec 11A) and corrects with two sensors:
+    /odom   gives speed and turn rate                       (Lec 11B)
+    camera  gives range and bearing to the tag              (Lec 12A)
+Angles are folded back into (-pi, pi] wherever two angles get subtracted (Lec 12B).
 
-Every formula carries a tag like [EQ ...]. The number is the section of theory/theory_equations.md,
-and theory/FORMULA_MAP.md lists where each tag sits in this file (python scripts/formula_lines.py).
+No ROS imports here on purpose, so the maths can be tested on any laptop.
 """
 import numpy as np
 
-PX, PY, TH, V, W = range(5)   # index of each state inside x
-N_STATES = 5
+STATE_SIZE = 5
+IDX_X, IDX_Y, IDX_HEADING, IDX_SPEED, IDX_TURN_RATE = range(STATE_SIZE)
 
 
-def wrap(angle):
-    """[EQ 4.WRAP] Bring any angle into (-pi, pi]: wrap(a) = atan2(sin a, cos a)."""
+def wrap_angle(angle):
+    """Fold an angle into (-pi, pi]. atan2 of sin/cos does it without any if-branches (Lec 12B)."""
     return float(np.arctan2(np.sin(angle), np.cos(angle)))
 
 
-# ---------------------------------------------------------------- prediction (Lecture 11A)
+# --------------------------------------------------------------------------- motion model (Lec 11A)
 
-def motion_model(x, u, dt):
-    """[EQ 2.f] Discrete unicycle with velocity states: x_{k+1} = f(x_k, u_k)."""
-    px, py, th, v, w = x
-    a, alpha = u
+def predict_state(state, accel_input, dt):
+    """Move the state forward by dt seconds: x_next = f(x, u), with u = (linear accel, angular accel)."""
+    x, y, heading, speed, turn_rate = state
+    linear_accel, angular_accel = accel_input
     return np.array([
-        px + v * np.cos(th) * dt,     # move forward along the heading (x part)
-        py + v * np.sin(th) * dt,     # move forward along the heading (y part)
-        th + w * dt,                  # turn
-        v + a * dt,                   # speed up / slow down
-        w + alpha * dt,               # turn faster / slower
+        x + speed * np.cos(heading) * dt,
+        y + speed * np.sin(heading) * dt,
+        heading + turn_rate * dt,
+        speed + linear_accel * dt,
+        turn_rate + angular_accel * dt,
     ])
 
 
-def jacobian_F(x, dt):
-    """[EQ 2.F] State Jacobian df/dx, evaluated at x_k (before the step)."""
-    th, v = x[TH], x[V]
+def motion_jacobian(state, dt):
+    """F = df/dx, taken at the state *before* the step.
+
+    The two entries that matter: a speed error becomes a position error (cos/sin column),
+    and a heading error pushes the robot sideways (the speed*dt column).
+    """
+    heading, speed = state[IDX_HEADING], state[IDX_SPEED]
+    cos_h, sin_h = np.cos(heading), np.sin(heading)
     return np.array([
-        [1.0, 0.0, -v * np.sin(th) * dt, np.cos(th) * dt, 0.0],
-        [0.0, 1.0,  v * np.cos(th) * dt, np.sin(th) * dt, 0.0],
-        [0.0, 0.0, 1.0, 0.0, dt],
-        [0.0, 0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 0.0, 1.0],
+        [1.0, 0.0, -speed * sin_h * dt, cos_h * dt, 0.0],
+        [0.0, 1.0,  speed * cos_h * dt, sin_h * dt, 0.0],
+        [0.0, 0.0, 1.0,                 0.0,        dt],
+        [0.0, 0.0, 0.0,                 1.0,        0.0],
+        [0.0, 0.0, 0.0,                 0.0,        1.0],
     ])
 
 
-def jacobian_G(dt):
-    """[EQ 2.G] Input Jacobian df/du: an acceleration only changes v and omega directly."""
-    return np.array([
-        [0.0, 0.0],
-        [0.0, 0.0],
-        [0.0, 0.0],
-        [dt, 0.0],
-        [0.0, dt],
-    ])
+def input_jacobian(dt):
+    """G = df/du. The accelerations only touch speed and turn rate directly."""
+    jac = np.zeros((STATE_SIZE, 2))
+    jac[IDX_SPEED, 0] = dt
+    jac[IDX_TURN_RATE, 1] = dt
+    return jac
 
 
-# ---------------------------------------------------------------- measurements
+# --------------------------------------------------------------------------- what the sensors should read
 
-# [EQ 3A.H_ODOM] /odom measures v and omega directly: pick rows 4 and 5 of the state.
-H_ODOM = np.array([
+# /odom measures speed and turn rate straight off the state, so H_odom just picks those two rows (Lec 11B).
+ODOM_JACOBIAN = np.array([
     [0.0, 0.0, 0.0, 1.0, 0.0],
     [0.0, 0.0, 0.0, 0.0, 1.0],
 ])
 
 
-def h_odom(x):
-    """[EQ 3A.h_odom] Predicted odometry reading: h_odom(x) = [v, omega]."""
-    return H_ODOM @ x
+def expected_odom(state):
+    """h_odom(x) = [speed, turn_rate]."""
+    return ODOM_JACOBIAN @ state
 
 
-def h_tag(x, tag_xy):
-    """[EQ 3B.h] Predicted camera reading of the tag at (mx, my): range d and bearing phi."""
-    dx = tag_xy[0] - x[PX]
-    dy = tag_xy[1] - x[PY]
-    d = np.hypot(dx, dy)                          # d = sqrt(dx^2 + dy^2)
-    phi = wrap(np.arctan2(dy, dx) - x[TH])        # angle to the tag seen from the robot's nose
-    return np.array([d, phi])
+def expected_tag_reading(state, tag_position):
+    """h(x) for the camera: range to the tag and bearing relative to the nose (Lec 12A)."""
+    dx = tag_position[0] - state[IDX_X]
+    dy = tag_position[1] - state[IDX_Y]
+    tag_range = np.hypot(dx, dy)
+    bearing = wrap_angle(np.arctan2(dy, dx) - state[IDX_HEADING])   # + means tag is to the left
+    return np.array([tag_range, bearing])
 
 
-def jacobian_H_tag(x, tag_xy):
-    """[EQ 3B.H_TAG] Measurement Jacobian dh/dx of the range-bearing model."""
-    dx = tag_xy[0] - x[PX]
-    dy = tag_xy[1] - x[PY]
-    q = dx * dx + dy * dy
-    d = np.sqrt(q)
+def tag_jacobian(state, tag_position):
+    """H_tag = dh/dx.
+
+    Row 1 (range) depends on x, y only -> this is what fixes along-track drift.
+    Row 2 (bearing) depends on x, y and heading -> fixes sideways error and heading.
+    """
+    dx = tag_position[0] - state[IDX_X]
+    dy = tag_position[1] - state[IDX_Y]
+    dist_sq = dx * dx + dy * dy                 # q in the lecture
+    dist = np.sqrt(dist_sq)                     # d in the lecture
     return np.array([
-        [-dx / d, -dy / d, 0.0, 0.0, 0.0],        # range row: fixes the along-track distance
-        [dy / q, -dx / q, -1.0, 0.0, 0.0],        # bearing row: fixes sideways error and heading
+        [-dx / dist,    -dy / dist,     0.0, 0.0, 0.0],
+        [dy / dist_sq,  -dx / dist_sq, -1.0, 0.0, 0.0],
     ])
 
 
-# ---------------------------------------------------------------- the filter
+# --------------------------------------------------------------------------- the filter
 
-class EKF:
-    """Predict with the motion model, correct with /odom and with the camera tag.
+class RobotEKF:
+    """Holds the estimate (state + covariance) and runs predict / correct.
 
-    tag_xy  : known room position (mx, my) of the tag; a constant, not a state.
-    q_accel : variances (sigma_a^2, sigma_alpha^2) of the unknown accelerations, fed through G.
-    q_pose  : extra variance per second on (px, py, theta) for wheel slip the model cannot see.
-    gate    : chi-square limit on the tag innovation (9.21 = 99 % for 2 values); None = accept all.
+    tag_position     known (x, y) of the tag in the room. Fixed, so it is not part of the state.
+    accel_noise_var  variance of the unknown accelerations, pushed into the state through G.
+    slip_noise_rate  extra variance per second on x, y, heading for slip the model can't see.
+    odom_noise_cov   R for /odom.      tag_noise_cov   R for the camera.
+    outlier_limit    chi-square cut-off on a camera reading (9.21 = 99 % for 2 values). None turns it off.
     """
 
-    def __init__(self, x0, P0, tag_xy, q_accel, q_pose, R_odom, R_tag, gate=9.21):
-        self.x = np.array(x0, dtype=float)
-        self.P = np.array(P0, dtype=float)
-        self.tag_xy = (float(tag_xy[0]), float(tag_xy[1]))
-        self.Q_u = np.diag(q_accel)
-        self.q_pose = np.diag(list(q_pose) + [0.0, 0.0])
-        self.R_odom = np.array(R_odom, dtype=float)
-        self.R_tag = np.array(R_tag, dtype=float)
-        self.gate = gate
+    def __init__(self, initial_state, initial_cov, tag_position, accel_noise_var, slip_noise_rate,
+                 odom_noise_cov, tag_noise_cov, outlier_limit=9.21):
+        self.state = np.array(initial_state, dtype=float)
+        self.cov = np.array(initial_cov, dtype=float)
+        self.tag_position = (float(tag_position[0]), float(tag_position[1]))
+        self.accel_noise = np.diag(accel_noise_var)
+        self.slip_noise = np.diag(list(slip_noise_rate) + [0.0, 0.0])
+        self.odom_noise = np.array(odom_noise_cov, dtype=float)
+        self.tag_noise = np.array(tag_noise_cov, dtype=float)
+        self.outlier_limit = outlier_limit
 
-    def predict(self, u, dt):
-        """[EQ 2.PREDICT] x- = f(x, u);  P- = F P F^T + G Q_u G^T + Q_pose dt."""
-        F = jacobian_F(self.x, dt)
-        G = jacobian_G(dt)
-        self.x = motion_model(self.x, u, dt)
-        self.x[TH] = wrap(self.x[TH])
-        self.P = F @ self.P @ F.T + G @ self.Q_u @ G.T + self.q_pose * dt
+    def predict(self, accel_input, dt):
+        """Prediction step: push the state through the model and grow the covariance.
 
-    def _correct(self, z, z_pred, H, R, angle_rows=(), gate=None):
-        """[EQ 4] The five Kalman correction steps, shared by both sensors."""
-        e = np.asarray(z, dtype=float) - z_pred           # 1. innovation (disagreement)
-        for i in angle_rows:
-            e[i] = wrap(e[i])                              #    angles: wrap, distances: never
-        S = H @ self.P @ H.T + R                           # 2. innovation covariance
-        S_inv = np.linalg.inv(S)
-        nis = float(e @ S_inv @ e)                         #    how surprising the reading is
-        if gate is not None and nis > gate:
-            return {'accepted': False, 'e': e, 'S': S, 'K': None, 'nis': nis}
-        K = self.P @ H.T @ S_inv                           # 3. Kalman gain
-        self.x = self.x + K @ e                            # 4. state update
-        self.x[TH] = wrap(self.x[TH])                      #    keep the heading in (-pi, pi]
-        self.P = (np.eye(N_STATES) - K @ H) @ self.P       # 5. covariance update
-        self.P = 0.5 * (self.P + self.P.T)                 #    remove rounding asymmetry
-        return {'accepted': True, 'e': e, 'S': S, 'K': K, 'nis': nis}
-
-    def update_odom(self, v, w):
-        """[EQ 3A] Correct with /odom (v, omega). /odom already contains the IMU: never add /imu too."""
-        return self._correct([v, w], h_odom(self.x), H_ODOM, self.R_odom)
-
-    def update_tag(self, d, phi, use_range=True):
-        """[EQ 3B] Correct with the camera: range d and bearing phi (or bearing only)."""
-        z_pred = h_tag(self.x, self.tag_xy)
-        H = jacobian_H_tag(self.x, self.tag_xy)
-        if use_range:
-            return self._correct([d, phi], z_pred, H, self.R_tag, angle_rows=(1,), gate=self.gate)
-        gate = None if self.gate is None else 6.63          # 99 % for one value
-        return self._correct([phi], z_pred[1:], H[1:], self.R_tag[1:, 1:], angle_rows=(0,), gate=gate)
-
-    def distance_to_tag(self, front_offset=0.0):
-        """Estimated distance from the chassis front to the tag, and its 1-sigma from P.
-
-        d_front = |m - p| - front_offset.  Its gradient w.r.t. (px, py) is J = -[dx/d, dy/d],
-        so var(d_front) = J P_xy J^T (first-order propagation of the covariance).
+        P = F P F^T + G Q G^T + slip * dt
         """
-        dx = self.tag_xy[0] - self.x[PX]
-        dy = self.tag_xy[1] - self.x[PY]
-        d = float(np.hypot(dx, dy))
-        J = np.array([-dx / d, -dy / d])
-        var = float(J @ self.P[:2, :2] @ J)
-        return d - front_offset, float(np.sqrt(max(var, 0.0)))
+        F = motion_jacobian(self.state, dt)      # must use the state before it moves
+        G = input_jacobian(dt)
+        self.state = predict_state(self.state, accel_input, dt)
+        self.state[IDX_HEADING] = wrap_angle(self.state[IDX_HEADING])
+        self.cov = F @ self.cov @ F.T + G @ self.accel_noise @ G.T + self.slip_noise * dt
+
+    def _correct(self, measured, expected, H, noise, angle_rows=(), outlier_limit=None):
+        """Standard EKF correction, shared by both sensors. Returns a small report for logging."""
+        innovation = np.asarray(measured, dtype=float) - expected
+        for row in angle_rows:
+            innovation[row] = wrap_angle(innovation[row])     # only bearings; a distance is never wrapped
+
+        innovation_cov = H @ self.cov @ H.T + noise           # S = H P H^T + R
+        innovation_cov_inv = np.linalg.inv(innovation_cov)
+        surprise = float(innovation @ innovation_cov_inv @ innovation)   # NIS, ~chi-square if all is well
+        if outlier_limit is not None and surprise > outlier_limit:
+            return {'accepted': False, 'innovation': innovation, 'gain': None, 'nis': surprise}
+
+        gain = self.cov @ H.T @ innovation_cov_inv            # K = P H^T S^-1
+        self.state = self.state + gain @ innovation
+        self.state[IDX_HEADING] = wrap_angle(self.state[IDX_HEADING])
+        self.cov = (np.eye(STATE_SIZE) - gain @ H) @ self.cov  # P = (I - K H) P
+        self.cov = 0.5 * (self.cov + self.cov.T)                # float rounding makes P drift off symmetric
+        return {'accepted': True, 'innovation': innovation, 'gain': gain, 'nis': surprise}
+
+    def correct_with_odom(self, speed, turn_rate):
+        """Use /odom speed and turn rate. /odom already has the IMU mixed in, so /imu is never added on top."""
+        return self._correct([speed, turn_rate], expected_odom(self.state), ODOM_JACOBIAN, self.odom_noise)
+
+    def correct_with_tag(self, tag_range, bearing, use_range=True):
+        """Use the camera reading. With use_range=False only the bearing row is used (for comparison runs)."""
+        expected = expected_tag_reading(self.state, self.tag_position)
+        H = tag_jacobian(self.state, self.tag_position)
+        if use_range:
+            return self._correct([tag_range, bearing], expected, H, self.tag_noise,
+                                 angle_rows=(1,), outlier_limit=self.outlier_limit)
+        limit_1dof = None if self.outlier_limit is None else 6.63      # 99 % for a single value
+        return self._correct([bearing], expected[1:], H[1:], self.tag_noise[1:, 1:],
+                             angle_rows=(0,), outlier_limit=limit_1dof)
+
+    def distance_from_front(self, front_offset=0.0):
+        """Distance from the chassis front to the tag, plus its 1-sigma.
+
+        The filter tracks the robot centre, but the tape is laid from the chassis front,
+        so subtract the centre-to-front length. For the sigma, the distance changes with x, y
+        by grad = -(dx, dy) / dist, so var = grad * P_xy * grad^T.
+        """
+        dx = self.tag_position[0] - self.state[IDX_X]
+        dy = self.tag_position[1] - self.state[IDX_Y]
+        centre_dist = float(np.hypot(dx, dy))
+        grad = np.array([-dx / centre_dist, -dy / centre_dist])
+        variance = float(grad @ self.cov[:2, :2] @ grad)
+        return centre_dist - front_offset, float(np.sqrt(max(variance, 0.0)))

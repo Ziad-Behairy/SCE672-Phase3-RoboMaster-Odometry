@@ -1,47 +1,42 @@
-# Formula map: every equation → the exact lines of code (Deliverable 4)
+# Formula map: each equation and where it is in the code (Deliverable 4)
 
-Equations from [`theory_equations.md`](theory_equations.md) (Lectures 11A, 11B, 12A, 12B). Each one is tagged in
-the code with `[EQ <section>]`. If you edit the code and the line numbers move, run
-`python3 scripts/formula_lines.py` to print the new positions.
+Equations from [`theory_equations.md`](theory_equations.md) (Lectures 11A, 11B, 12A, 12B).
+If the code changes and lines move, `python3 scripts/formula_lines.py` prints the new positions.
 
-Short names: **ekf.py** = [`src/rm_odom_ekf/rm_odom_ekf/ekf.py`](../src/rm_odom_ekf/rm_odom_ekf/ekf.py),
-**node** = [`src/rm_odom_ekf/rm_odom_ekf/phase3_node.py`](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py).
+**ekf.py** = [`src/rm_odom_ekf/rm_odom_ekf/ekf.py`](../src/rm_odom_ekf/rm_odom_ekf/ekf.py) ·
+**node** = [`src/rm_odom_ekf/rm_odom_ekf/phase3_node.py`](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py)
 
-| # | Formula | Where | What it does | What breaks without it |
+| # | Formula | Code | What it does | Without it |
 |---|---|---|---|---|
-| 1 | State $x=[p_x,p_y,\theta,v,\omega]^T$ (Lec 11A) | [ekf.py L15](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L15) (`PX, PY, TH, V, W`) | Names the 5 numbers the robot keeps track of. $v,\omega$ are states because the chassis takes time to reach the commanded speed. | With only the pose as states, `/odom` (which measures $v,\omega$) could not be used as a measurement. |
-| 2 | Motion model $f$: $p_x{+}v\cos\theta\,dt$, $p_y{+}v\sin\theta\,dt$, $\theta{+}\omega dt$, $v{+}a\,dt$, $\omega{+}\alpha dt$ (Lec 11A) | [ekf.py L26–36](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L26-L36) | **Prediction**: "if I drive at speed $v$ for $dt$ seconds in direction $\theta$, here is where I'll be." | No guess between camera frames; the estimate jumps around and is lost when the tag drops out. |
-| 3 | State Jacobian $F=\partial f/\partial x$ (Lec 11A slide 15) | [ekf.py L39–48](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L39-L48) | Tells $P$ how errors spread: a speed error becomes a position error ($\cos\theta\,dt$ entry); a heading error becomes a sideways error ($v\cos\theta\,dt$ entry). | $P$ would never link $p_x$ with $v$, so odometry could not correct position (row 6) and the uncertainty would be wrong. |
-| 4 | Input Jacobian $G=\partial f/\partial u$ (Lec 11A) | [ekf.py L51–59](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L51-L59) | Turns the unknown accelerations $(a,\alpha)$ into uncertainty on $v,\omega$: $G Q_u G^T$. | No process noise on $v,\omega$: the filter would trust its own speed forever and ignore `/odom`. |
-| 5 | Covariance prediction $P^-=FPF^T+GQ_uG^T(+Q_{pose}dt)$ | [ekf.py L118–124](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L118-L124); called at [node L181–186](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py#L181-L186) | Uncertainty grows while the robot only predicts (wheel slip, lag). | $P$ shrinks to zero; later camera readings get ignored (overconfident filter). |
-| 6 | $h_{odom}(x)=[v,\omega]$, $H_{odom}=\begin{bmatrix}0&0&0&1&0\\0&0&0&0&1\end{bmatrix}$ (Lec 11B) | [ekf.py L64–73](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L64-L73); update at [ekf.py L143–145](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L143-L145); called at [node L188–194](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py#L188-L194) | **Odometry correction**: `/odom` measures speed and turn rate, so $H$ picks those two states. Position is corrected *indirectly* through $p_{xv}$ in $P$. | Speed is only a guess from the command; inner-loop lag and stalls go unnoticed. |
-| 7 | Range–bearing model $d=\sqrt{\Delta x^2+\Delta y^2}$, $\varphi=\text{atan2}(\Delta y,\Delta x)-\theta$ (Lec 12A) | [ekf.py L76–82](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L76-L82) | What the camera *should* see if our estimate were right. | Nothing to compare the camera with: no correction. |
-| 8 | $H_{tag}=\begin{bmatrix}-\Delta x/d&-\Delta y/d&0&0&0\\ \Delta y/q&-\Delta x/q&-1&0&0\end{bmatrix}$ (Lec 12A) | [ekf.py L85–94](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L85-L94) | How a small change in pose changes $d$ and $\varphi$. Row 1 (range) fixes **along-track** drift; row 2 (bearing) fixes **sideways** error and heading. | Kalman gain would be wrong-shaped; corrections go to the wrong states. |
-| 9 | Innovation $e=z-h(x^-)$ | [ekf.py L128](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L128) | The disagreement between the sensor and the prediction. | — (this *is* the correction signal) |
-| 10 | **Angle wrap** $\text{wrap}(\alpha)=\text{atan2}(\sin\alpha,\cos\alpha)$ (Lec 12B) | defined [ekf.py L19–21](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L19-L21); bearing innovation [L129–130](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L129-L130); $\theta^+$ after update [L138](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L138); $\theta$ after predict [L123](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L123); predicted bearing [L81](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L81) | Keeps angles in $(-\pi,\pi]$. +179° vs −179° is a 2° difference, not 358°. | A ±π crossing gives a ~2π innovation: the robot "corrects" itself into a spin. **Never** applied to the distance innovation, $P$ or $K$ (test: `test_range_innovation_is_not_wrapped`). |
-| 11 | Innovation covariance $S=HP^-H^T+R$ | [ekf.py L131](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L131) | Expected size of the disagreement: our own doubt + sensor noise. | No way to weigh the sensor against the prediction. |
-| 12 | Gate $e^TS^{-1}e \le 9.21$ (χ², 99 %) | [ekf.py L133–135](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L133-L135) | Throws away a camera reading that is impossibly far from the prediction (wrong tag, blur). | One bad detection yanks the estimate by tens of cm. |
-| 13 | Kalman gain $K=P^-H^TS^{-1}$ (scalar form $K_i=p_{i\varphi}/(p_{\varphi\varphi}+r_{\varphi\varphi})$, Lec 12A) | [ekf.py L136](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L136) | How much to believe the sensor, per state: big when we are unsure, small when the sensor is noisy. | — (logged every step: columns `K00..K41` of `steps.csv`, `K_last_tag` in `summary.json`) |
-| 14 | State update $x^+=x^-+Ke$ | [ekf.py L137](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L137) | Moves the estimate toward the sensor by the right amount. | — |
-| 15 | Covariance update $P^+=(I-KH)P^-$ | [ekf.py L139–140](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L139-L140) | We are now more certain; symmetrised against rounding. | $P$ only grows; gains stay huge; the estimate chases sensor noise. |
-| 16 | Final distance and its σ: $d_{front}=\lVert m-p\rVert-\ell_{front}$, $\sigma_d=\sqrt{JPJ^T}$ | [ekf.py L156–167](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L156-L167) | The graded number ($d_{est}$) measured from the **same reference point as the tape** (chassis front), plus how sure the EKF is. | Estimate and tape would refer to different points on the robot (spec, required work 2). |
-| 17 | Error $e_{final}=d_{est}-d_{meas}$ | [scripts/add_measurement.py L42](../scripts/add_measurement.py#L42) | Per-trial error (spec, required work 3). | — |
-| 18 | MAE, range, bias, σ², σ, cov | [scripts/analyze_trials.py `stats_of` / `compute`](../scripts/analyze_trials.py) | Deliverable 7 statistics. | — |
+| 1 | State $x=[p_x,p_y,\theta,v,\omega]^T$ (Lec 11A) | [ekf.py L18–19](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L18-L19) `IDX_X … IDX_TURN_RATE` | The five things we track. Speed and turn rate are states because the chassis lags behind `cmd_vel`. | `/odom` (which measures $v,\omega$) would have nothing in the state to compare against. |
+| 2 | Motion model $f$ (Lec 11A) | [ekf.py L29–39](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L29-L39) `predict_state` | Prediction: drive at $v$ along $\theta$ for $dt$ and see where you end up. | Nothing fills the gaps between camera frames, or covers the time the tag is lost. |
+| 3 | $F=\partial f/\partial x$ (Lec 11A sl. 15) | [ekf.py L42–56](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L42-L56) `motion_jacobian` | How errors spread: speed error → position error ($\cos\theta\,dt$), heading error → sideways error ($v\cos\theta\,dt$). | $P$ never links position with speed, so odometry can't correct position (row 6). |
+| 4 | $G=\partial f/\partial u$ (Lec 11A) | [ekf.py L59–64](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L59-L64) `input_jacobian` | Unknown accelerations become uncertainty on $v,\omega$ through $GQG^T$. | The filter trusts its own speed forever and ignores `/odom`. |
+| 5 | $P^-=FPF^T+GQG^T(+Q_{slip}dt)$ | [ekf.py L129–138](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L129-L138) `predict`; called at [node L198–204](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py#L198-L204) | Uncertainty grows while we only predict. | $P$ collapses, and the filter stops listening to the camera. |
+| 6 | $h_{odom}=[v,\omega]$, $H_{odom}$ (Lec 11B) | [ekf.py L69–78](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L69-L78); [`correct_with_odom` L159–161](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L159-L161); called at [node L206–212](../src/rm_odom_ekf/rm_odom_ekf/phase3_node.py#L206-L212) | Odometry correction. $H$ just picks the speed and turn-rate rows. Position is corrected indirectly through the $p_{xv}$ term of $P$. | Speed is a pure guess from the command. Lag and stalls go unnoticed. |
+| 7 | $d=\sqrt{\Delta x^2+\Delta y^2}$, $\varphi=\text{atan2}(\Delta y,\Delta x)-\theta$ (Lec 12A) | [ekf.py L81–87](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L81-L87) `expected_tag_reading` | What the camera should see if the estimate were right. | Nothing to compare the camera reading with. |
+| 8 | $H_{tag}$ (Lec 12A) | [ekf.py L90–103](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L90-L103) `tag_jacobian` | The range row fixes along-track error; the bearing row fixes sideways error and heading. | The gain is the wrong shape, and corrections go into the wrong states. |
+| 9 | Innovation $e=z-h(x^-)$ | [ekf.py L142](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L142) | How far the sensor disagrees with the prediction. | — |
+| 10 | $\text{wrap}(\alpha)=\text{atan2}(\sin\alpha,\cos\alpha)$ (Lec 12B) | defined [L22–24](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L22-L24); bearing innovation [L143–144](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L143-L144); heading after update [L154](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L154); heading after predict [L137](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L137); predicted bearing [L86](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L86) | +179° and −179° are 2° apart, not 358°. | Crossing ±π gives a ~2π correction and the heading flips. **Not** applied to range, $P$ or $K$ (`test_range_error_is_never_wrapped`). |
+| 11 | $S=HP^-H^T+R$ | [ekf.py L146](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L146) | Expected size of the disagreement: our doubt plus the sensor noise. | No way to weigh the sensor against the prediction. |
+| 12 | Gate $e^TS^{-1}e\le 9.21$ | [ekf.py L148–150](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L148-L150) | Drops camera readings that can't be right (blur, wrong tag). | One bad detection moves the estimate by tens of centimetres. |
+| 13 | $K=P^-H^TS^{-1}$ (scalar form $p_{i\varphi}/(p_{\varphi\varphi}+r_{\varphi\varphi})$) | [ekf.py L152](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L152) | How much to believe the sensor, state by state. Logged as `K00…K41` in `steps.csv`. | — |
+| 14 | $x^+=x^-+Ke$ | [ekf.py L153](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L153) | Move the estimate toward the sensor by that amount. | — |
+| 15 | $P^+=(I-KH)P^-$ | [ekf.py L155–156](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L155-L156) | We know more now, so $P$ shrinks. Symmetrised against rounding. | $P$ only grows, and the estimate chases sensor noise. |
+| 16 | $d_{front}=\lVert m-p\rVert-\ell_{front}$, $\sigma_d=\sqrt{JPJ^T}$ | [ekf.py L174–186](../src/rm_odom_ekf/rm_odom_ekf/ekf.py#L174-L186) `distance_from_front` | The reported distance, from the same point the tape uses (chassis front), plus its σ. | Estimate and tape would refer to different points on the robot. |
+| 17 | $e_{final}=d_{est}-d_{meas}$ | [scripts/add_measurement.py L42](../scripts/add_measurement.py#L42) | Error for each trial. | — |
+| 18 | MAE, range, bias, σ², σ, cov | [scripts/analyze_trials.py](../scripts/analyze_trials.py) `stats_of`, `compute` | Statistics over all trials. | — |
 
-## The check from Lecture 11A slide 18
-
-Every Jacobian is compared with central differences
-$\partial f_i/\partial x_j \approx (f_i(x+he_j)-f_i(x-he_j))/2h$, $h=10^{-6}$, in
-[`test_ekf.py`](../src/rm_odom_ekf/test/test_ekf.py) (`test_F_…`, `test_G_…`, `test_H_tag_…`). Run on Windows or Ubuntu:
-
+## Checking the Jacobians (Lec 11A slide 18)
+[`test_ekf.py`](../src/rm_odom_ekf/test/test_ekf.py) compares $F$, $G$ and $H_{tag}$ with central differences,
+$(f(x+he_j)-f(x-he_j))/2h$ with $h=10^{-6}$:
 ```bash
 cd src/rm_odom_ekf && python3 -m pytest -q test
 ```
 
-## Section 4 of the report: why the camera must give range, not just bearing (Lec 12A slide 26)
-
-Driving straight at the tag, $\Delta y\approx 0$, so the bearing row of $H_{tag}$ is $[\,0,\ -1/d,\ -1,\ 0,\ 0\,]$:
-it has **zero** in the $p_x$ column. Bearing alone tells the robot nothing about how far along the line it is,
-which is exactly the direction wheel odometry drifts. The range row $[-1,\ 0,\ 0,\ 0,\ 0]$ is the only thing that
-sees along-track error. The test `test_bearing_only_barely_fixes_along_track` proves it numerically, and
-`use_tag_range: false` in `robot.yaml` lets you show it on the robot as an extra trial.
+## For Section 4 of the report: why the camera has to give range (Lec 12A slide 26)
+Facing the tag, $\Delta y\approx0$, so the bearing row of $H_{tag}$ is $[\,0,\ -1/d,\ -1,\ 0,\ 0\,]$. Its $p_x$ entry is
+zero, so bearing tells the filter nothing about how far along the line the robot is, and that is exactly the
+direction wheel odometry drifts in. Only the range row $[-1,0,0,0,0]$ sees along-track error.
+`test_bearing_alone_cannot_fix_along_track_error` shows this numerically. Setting `use_tag_range: false` shows it on
+the robot.

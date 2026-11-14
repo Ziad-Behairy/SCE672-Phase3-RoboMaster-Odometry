@@ -1,19 +1,13 @@
-"""Straight-line drive toward the tag with a clean stop. Pure Python (no ROS), unit tested.
+"""Drive straight at the tag and stop at a fixed distance. No ROS here, so it can be unit tested.
 
-States:
-  WAITING  robot still. Waits until the tag has been seen tag_settle times (the EKF locks on to the start
-           position meanwhile). Gives up after wait_timeout.
-  DRIVING  v ramps up to v_max, then slows down in proportion to the distance left. A small steering term
-           keeps the nose pointed at the tag (the bearing comes from the EKF estimate, not the raw camera,
-           so it still works when the camera loses the tag).
-  HOLDING  v = 0, omega = 0. The robot settles; the EKF keeps running so the final estimate is taken at rest.
-  DONE     trial finished; the node writes the summary and exits.
+Modes:
+    WAITING   stand still until the camera has given enough good fixes (the filter settles meanwhile)
+    DRIVING   ramp up, cruise, slow down as the tag gets close, keep the nose on the tag
+    HOLDING   wheels stopped, wait a moment so the robot stops rolling before we read the final estimate
+    DONE      trial over
 
-Brakes (DRIVING -> HOLDING), first one wins:
-  EKF distance to the tag <= stop_distance   (the normal stop: odometry prediction + camera correction)
-  front ToF <= tof_brake                      (safety only)
-  distance travelled >= max_travel            (safety: odometry says we went too far)
-  drive_timeout                               (safety)
+The normal stop comes from the filtered distance (prediction + correction), not the raw camera.
+The ToF sensor, distance travelled and a timer are only there as safety stops.
 """
 import math
 from dataclasses import dataclass
@@ -22,100 +16,100 @@ WAITING, DRIVING, HOLDING, DONE = 'WAITING', 'DRIVING', 'HOLDING', 'DONE'
 
 
 @dataclass
-class ControllerParams:
-    stop_distance: float = 0.40   # m, chassis front -> tag, the same for every trial
-    v_max: float = 0.15           # m/s
-    v_min: float = 0.03           # m/s, below this the chassis barely moves
-    k_v: float = 0.6              # 1/s, slow-down gain: v = k_v * distance left
-    a_max: float = 0.25           # m/s^2, ramp limit (no wheel slip at the start)
-    k_heading: float = 1.0        # rad/s per rad of bearing error
-    w_max: float = 0.30           # rad/s
-    tag_settle: int = 10          # tag detections needed before driving
-    wait_timeout: float = 15.0    # s
-    hold_time: float = 2.0        # s at rest before the final estimate is read
-    max_travel: float = 1.30      # m, safety
-    tof_brake: float = 0.15       # m, safety
-    tof_min_valid: float = 0.02   # m, smaller readings are noise
-    drive_timeout: float = 30.0   # s, safety
+class DriveSettings:
+    stop_distance: float = 0.40       # m, chassis front to tag. Same value for every trial
+    max_speed: float = 0.15           # m/s
+    min_speed: float = 0.03           # m/s, the chassis hardly moves below this
+    slowdown_gain: float = 0.6        # 1/s, target speed = gain * distance still to go
+    max_accel: float = 0.25           # m/s^2, gentle ramp so the wheels don't slip at the start
+    steer_gain: float = 1.0           # rad/s per rad of bearing error
+    max_turn_rate: float = 0.30       # rad/s
+    fixes_before_start: int = 10      # accepted camera fixes needed before moving
+    wait_limit: float = 15.0          # s, give up if the tag never shows up
+    settle_time: float = 2.0          # s standing still before the final reading
+    max_travel: float = 1.30          # m, safety
+    tof_stop: float = 0.15            # m, safety
+    tof_ignore_below: float = 0.02    # m, the ToF reports ~0 when it has no echo
+    drive_limit: float = 30.0         # s, safety
 
 
-def clamp(x, lim):
-    return max(-lim, min(lim, x))
+def clamp(value, limit):
+    return max(-limit, min(limit, value))
 
 
-class StraightLineController:
+class ApproachController:
 
-    def __init__(self, params=None):
-        self.p = params or ControllerParams()
-        self.state = WAITING
-        self.t_state = None        # time the current state started
-        self.v_cmd = 0.0
+    def __init__(self, settings=None):
+        self.cfg = settings or DriveSettings()
+        self.mode = WAITING
+        self.mode_started = None
+        self.speed_cmd = 0.0
         self.stop_reason = ''
 
-    def _enter(self, state, now, reason=''):
-        self.state, self.t_state = state, now
+    def _switch(self, mode, now, reason=''):
+        self.mode, self.mode_started = mode, now
         if reason:
             self.stop_reason = reason
 
-    def step(self, now, dt, d_est, heading_err, travelled, n_tag, tof=None):
-        """One control tick. Returns (v, omega) in the mission frame (+v = toward the tag).
+    def update(self, now, dt, distance_left, bearing, travelled, good_fixes, tof_range=None):
+        """One control step. Returns (speed, turn_rate); positive speed = toward the tag.
 
-        d_est       EKF distance chassis front -> tag (m)
-        heading_err EKF bearing to the tag (rad, + = tag on the left)
-        travelled   EKF distance from the start position (m)
-        n_tag       number of accepted tag updates so far
-        tof         latest front ToF range (m) or None
+        distance_left  filtered distance chassis front -> tag (m)
+        bearing        filtered angle from the nose to the tag (rad, + = left)
+        travelled      filtered distance from the start point (m)
+        good_fixes     camera readings the filter has accepted so far
+        tof_range      latest front ToF reading (m), or None
         """
-        p = self.p
-        if self.t_state is None:
-            self.t_state = now
+        cfg = self.cfg
+        if self.mode_started is None:
+            self.mode_started = now
 
-        if self.state == WAITING:
-            if n_tag >= p.tag_settle:
-                self._enter(DRIVING, now)
-            elif now - self.t_state > p.wait_timeout:
-                self._enter(DONE, now, f'tag not seen {p.tag_settle} times in {p.wait_timeout:.0f} s')
-            return self._stop()
+        if self.mode == WAITING:
+            if good_fixes >= cfg.fixes_before_start:
+                self._switch(DRIVING, now)
+            elif now - self.mode_started > cfg.wait_limit:
+                self._switch(DONE, now, f'tag not seen {cfg.fixes_before_start} times in {cfg.wait_limit:.0f} s')
+            return self._halt()
 
-        if self.state == DRIVING:
-            reason = self._brake_reason(now, d_est, travelled, tof)
+        if self.mode == DRIVING:
+            reason = self._why_stop(now, distance_left, travelled, tof_range)
             if reason:
-                self._enter(HOLDING, now, reason)
-                return self._stop()
-            left = d_est - p.stop_distance
-            v_target = min(p.v_max, max(p.v_min, p.k_v * left))
-            self.v_cmd += clamp(v_target - self.v_cmd, p.a_max * dt)     # ramp
-            w = clamp(p.k_heading * heading_err, p.w_max)
-            return self.v_cmd, w
+                self._switch(HOLDING, now, reason)
+                return self._halt()
+            to_go = distance_left - cfg.stop_distance
+            target = min(cfg.max_speed, max(cfg.min_speed, cfg.slowdown_gain * to_go))
+            self.speed_cmd += clamp(target - self.speed_cmd, cfg.max_accel * dt)   # ramp toward target
+            turn = clamp(cfg.steer_gain * bearing, cfg.max_turn_rate)
+            return self.speed_cmd, turn
 
-        if self.state == HOLDING and now - self.t_state >= p.hold_time:
-            self._enter(DONE, now)
-        return self._stop()
+        if self.mode == HOLDING and now - self.mode_started >= cfg.settle_time:
+            self._switch(DONE, now)
+        return self._halt()
 
-    def abort(self, now, reason):
-        """Brake right now (used by the node, e.g. when the camera arm moves). Ends in HOLDING -> DONE."""
-        if self.state in (WAITING, DRIVING):
-            self._enter(HOLDING, now, reason)
-        return self._stop()
+    def emergency_stop(self, now, reason):
+        """Brake straight away (the node calls this if the camera arm moves). Still goes HOLDING -> DONE."""
+        if self.mode in (WAITING, DRIVING):
+            self._switch(HOLDING, now, reason)
+        return self._halt()
 
-    def _stop(self):
-        self.v_cmd = 0.0
+    def _halt(self):
+        self.speed_cmd = 0.0
         return 0.0, 0.0
 
-    def _brake_reason(self, now, d_est, travelled, tof):
-        p = self.p
-        if d_est <= p.stop_distance:
-            return f'EKF distance {d_est:.3f} m'
-        if tof is not None and p.tof_min_valid < tof <= p.tof_brake:
-            return f'ToF {tof:.3f} m (safety)'
-        if travelled >= p.max_travel:
+    def _why_stop(self, now, distance_left, travelled, tof_range):
+        cfg = self.cfg
+        if distance_left <= cfg.stop_distance:
+            return f'EKF distance {distance_left:.3f} m'
+        if tof_range is not None and cfg.tof_ignore_below < tof_range <= cfg.tof_stop:
+            return f'ToF {tof_range:.3f} m (safety)'
+        if travelled >= cfg.max_travel:
             return f'travelled {travelled:.3f} m (safety)'
-        if now - self.t_state >= p.drive_timeout:
-            return f'drive timeout {p.drive_timeout:.0f} s (safety)'
+        if now - self.mode_started >= cfg.drive_limit:
+            return f'drive timeout {cfg.drive_limit:.0f} s (safety)'
         return ''
 
 
-def bearing_error(px, py, theta, tag_xy):
-    """Angle from the robot's nose to the tag, wrapped to (-pi, pi]."""
-    a = math.atan2(tag_xy[1] - py, tag_xy[0] - px) - theta
-    return math.atan2(math.sin(a), math.cos(a))
+def bearing_to(x, y, heading, tag_position):
+    """Angle from the nose to the tag, folded into (-pi, pi]."""
+    angle = math.atan2(tag_position[1] - y, tag_position[0] - x) - heading
+    return math.atan2(math.sin(angle), math.cos(angle))

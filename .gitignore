@@ -5,5 +5,3 @@ __pycache__/
 build/
 install/
 log/
-# simulated demo output (scripts/simulate_trials.py): never mix with real results
-results/_demo/

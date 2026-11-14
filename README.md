@@ -38,19 +38,17 @@ src/rm_odom_ekf/
   config/robot.yaml             all parameters (start/stop distance, noise, calibration)
   launch/phase3.launch.py       ros2 launch rm_odom_ekf phase3.launch.py trial:=N
   test/                         23 unit tests incl. central-difference Jacobian checks
-scripts/                        add_measurement, analyze_trials, calibrate_range, simulate_trials, formula_lines
+scripts/                        add_measurement, analyze_trials, calibrate_range, formula_lines
 theory/                         theory_equations.md, FORMULA_MAP.md, ODOMETRY_ROLE.md, project spec
 results/                        trials/, figures/, summary_table.*, statistics.json
 docs/                           guides (code explanation, robot runbook, video, GitHub)
 ```
 
 ## Quick start
-**Windows or Ubuntu, no robot:** tests and a simulated dry run of the whole pipeline
+**Windows or Ubuntu, no robot:** unit tests for the filter and controller
 ```bash
 python -m pip install numpy matplotlib pytest
-cd src/rm_odom_ekf && python -m pytest -q test && cd ../..
-python scripts/simulate_trials.py --n 10
-python scripts/analyze_trials.py --trials results/_demo/trials --out results/_demo    # figures say SIMULATED
+cd src/rm_odom_ekf && python -m pytest -q test
 ```
 **On the robot:** follow [docs/RUN_ON_ROBOT.md](docs/RUN_ON_ROBOT.md) (install, calibration, sign check, trials).
 

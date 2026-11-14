@@ -1,15 +1,14 @@
-"""Tag detector node: the robot's "eyes". Trimmed from the Phase 2 detector (rm_flatness_nav).
+"""Camera side of the project. Started from my Phase 2 detector and cut down to what Phase 3 needs.
 
-- Reads camera/image_color and camera/camera_info from the robomaster_ros driver.
-- Finds the target AprilTag (family tag36h11) with pupil-apriltags, which also returns the tag position
-  in the camera frame from the known printed tag size and the camera intrinsics.
-- Turns that into the two numbers the EKF needs, measured from the CHASSIS FRONT:
-    d    = range_scale * forward + range_offset     (horizontal distance, calibrated with a tape)
-    phi  = atan2(left, forward)                      (bearing, + = tag on the left, REP-103)
-- Publishes tag/range_bearing = [d, phi, decision_margin, image_stamp_s] and tag/point (forward, left, up).
+pupil-apriltags finds tag36h11 ID 3 in camera/image_color and, given the printed tag size and the
+camera intrinsics, returns where the tag sits relative to the camera. From that we publish the two
+numbers the filter uses, both measured from the chassis front:
+    range    = range_scale * forward + range_offset   (scale/offset come from the tape calibration)
+    bearing  = atan2(left, forward)                   (+ = tag on the left, ROS convention)
+on tag/range_bearing as [range, bearing, decision_margin, image_stamp].
 
-Only the newest frame is processed (fixed-rate timer, queue depth 1), so slow detection never builds a
-backlog of old frames. A watchdog re-subscribes if the camera goes silent after a Wi-Fi reconnect.
+Only the newest frame is processed, so a slow detection never leaves us working on old images.
+If the images stop for 2 s (Wi-Fi reconnect), the subscription is recreated.
 """
 import os
 
@@ -100,9 +99,11 @@ class TagDetector(Node):
             return
         self.n_hits += 1
 
+        # pose_t is in the optical frame (x right, y down, z out of the lens). The camera looks slightly
+        # down, so rotate by the pitch first to get forward/left on the floor plane.
         forward, left, up = camera_to_level(target.pose_t, self.cam_pitch)
-        d = self.range_scale * forward + self.range_offset     # chassis front -> tag (m)
-        phi = float(np.arctan2(left, forward))                 # + = tag on the left
+        front_range = self.range_scale * forward + self.range_offset
+        bearing = float(np.arctan2(left, forward))
 
         pt = PointStamped()
         pt.header.stamp = msg.header.stamp
@@ -110,7 +111,7 @@ class TagDetector(Node):
         pt.point.x, pt.point.y, pt.point.z = float(forward), float(left), float(up)
         self.point_pub.publish(pt)
         stamp = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
-        self.rb_pub.publish(Float32MultiArray(data=[float(d), phi, float(target.decision_margin), stamp]))
+        self.rb_pub.publish(Float32MultiArray(data=[float(front_range), bearing, float(target.decision_margin), stamp]))
 
     def publish_debug(self, msg, detections):
         img = self.bridge.imgmsg_to_cv2(msg, 'bgr8').copy()

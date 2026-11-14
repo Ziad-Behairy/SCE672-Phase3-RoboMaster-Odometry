@@ -39,17 +39,17 @@ phase3_ekf:
     tag_gate: 9.21             # chi-square 99 %, 2 values: rejects wild camera readings
     input_tau: 0.3             # s, chassis speed-loop lag used to form u = (a, alpha)
     # controller
-    v_max: 0.15
-    v_min: 0.03
-    k_v: 0.6
-    a_max: 0.25
-    k_heading: 1.0
-    w_max: 0.30
-    tag_settle: 10
-    wait_timeout: 15.0
-    hold_time: 2.0
-    tof_brake: 0.15
-    drive_timeout: 30.0
+    max_speed: 0.15            # m/s
+    min_speed: 0.03            # m/s, chassis barely moves below this
+    slowdown_gain: 0.6         # 1/s, target speed = gain * distance still to go
+    max_accel: 0.25            # m/s^2, gentle ramp, no wheel slip at the start
+    steer_gain: 1.0            # rad/s per rad of bearing error
+    max_turn_rate: 0.30        # rad/s
+    fixes_before_start: 10     # camera fixes needed before moving
+    wait_limit: 15.0           # s, give up if the tag never shows up
+    settle_time: 2.0           # s standing still before the final reading
+    tof_stop: 0.15             # m, safety only
+    drive_limit: 30.0          # s, safety only
     # camera arm guard (P2 saved pose; re-save if you move the arm for the upright tag)
     arm_check: true
     arm_x_saved: 0.123

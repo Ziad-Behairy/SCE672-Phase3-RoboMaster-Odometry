@@ -37,14 +37,14 @@ def main():
 
     folder = find_trial(args.trial, args.trials_dir)
     path = folder / 'summary.json'
-    s = json.loads(path.read_text())
-    s['d_meas'] = args.d_meas
-    s['error'] = s['d_est_final'] - args.d_meas
-    s['error_cam'] = None if s.get('d_cam_final') is None else s['d_cam_final'] - args.d_meas
-    s['error_odom'] = None if s.get('d_odom_only_final') is None else s['d_odom_only_final'] - args.d_meas
-    path.write_text(json.dumps(s, indent=2))
-    print(f'{folder.name}: d_est = {s["d_est_final"]:.4f} m, d_meas = {args.d_meas:.4f} m, '
-          f'error = {s["error"] * 100:+.2f} cm' + ('' if s.get('valid', True) else '   (marked INVALID)'))
+    summary = json.loads(path.read_text())
+    summary['d_meas'] = args.d_meas
+    summary['error'] = summary['d_est_final'] - args.d_meas
+    summary['error_cam'] = None if summary.get('d_cam_final') is None else summary['d_cam_final'] - args.d_meas
+    summary['error_odom'] = None if summary.get('d_odom_only_final') is None else summary['d_odom_only_final'] - args.d_meas
+    path.write_text(json.dumps(summary, indent=2))
+    print(f'{folder.name}: d_est = {summary["d_est_final"]:.4f} m, d_meas = {args.d_meas:.4f} m, '
+          f'error = {summary["error"] * 100:+.2f} cm' + ('' if summary.get('valid', True) else '   (marked INVALID)'))
 
 
 if __name__ == '__main__':

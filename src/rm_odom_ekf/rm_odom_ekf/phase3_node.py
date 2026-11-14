@@ -1,21 +1,18 @@
-"""Phase 3 node: odometry prediction + camera correction (EKF), straight-line drive, trial logging.
+"""Phase 3 ROS 2 node: odometry prediction + camera correction, straight drive to the tag, trial logging.
 
-Room frame: origin at the robot CENTRE at the start, +x straight toward the tag, +y left, theta = 0 at start.
-The tag is a known constant at (start_distance + front_offset, 0): start_distance is taped from the CHASSIS
-FRONT to the tag, front_offset is robot centre -> chassis front. All reported distances are chassis front ->
-tag, the same reference point the tape uses (spec, required work 2).
+Room frame used by the filter:
+    origin  = robot centre at the start position
+    +x      = straight at the tag, +y to the left, heading 0 at the start
+    tag     = (start_distance + front_offset, 0)
+start_distance is taped from the chassis FRONT, front_offset is centre -> front, so every distance this
+node reports is front -> tag, which is the same point the tape uses at the end of the trial.
 
-Every tick (control_rate, 20 Hz):
-  1. predict      x- = f(x, u), P- = F P F^T + G Q G^T          u = (a, alpha) from the commanded speed
-  2. odometry     if a new /odom arrived: correct v, omega      (Lecture 11B, H_odom)
-  3. camera       if a new tag reading arrived: correct d, phi  (Lecture 12A, H_tag, wrapped bearing)
-  4. control      drive straight, brake when the EKF distance reaches stop_distance
-  5. log          one row of steps.csv; summary.json when the trial ends
+Each tick (20 Hz): predict, correct with /odom if a new message came in, correct with the camera if a
+fresh tag reading came in, run the controller, write a log row.
 
-Topics in:  odom (nav_msgs/Odometry, ~10 Hz, already fuses wheels + IMU), tag/range_bearing (tag_detector),
-            range_0 (front ToF, safety brake only), arm_position (camera arm, optional guard).
-Topics out: cmd_vel (geometry_msgs/Twist), ekf/state [px, py, theta, v, omega, d_est, sigma_d].
-/imu is deliberately NOT used: /odom already contains it, and using both counts the IMU twice.
+Subscribes: odom (nav_msgs/Odometry), tag/range_bearing (from tag_detector), range_0 (front ToF),
+            arm_position (camera arm). /imu is left out on purpose: /odom already uses it.
+Publishes:  cmd_vel, ekf/state = [x, y, heading, speed, turn_rate, d_est, sigma_d]
 """
 import math
 import statistics
@@ -30,91 +27,110 @@ from rclpy.signals import SignalHandlerOptions
 from sensor_msgs.msg import Range
 from std_msgs.msg import Float32MultiArray
 
-from rm_odom_ekf.controller import DONE, DRIVING, HOLDING, WAITING, ControllerParams, StraightLineController
-from rm_odom_ekf.ekf import EKF, PX, PY, TH, V, W, h_tag, wrap
-from rm_odom_ekf.trial_logger import TrialLogger, matrix_to_list
+from rm_odom_ekf.controller import DONE, DRIVING, HOLDING, ApproachController, DriveSettings
+from rm_odom_ekf.ekf import (IDX_HEADING, IDX_SPEED, IDX_TURN_RATE, IDX_X, IDX_Y, RobotEKF,
+                             expected_tag_reading, wrap_angle)
+from rm_odom_ekf.trial_logger import TrialRecorder, as_nested_list
 
 
-def yaw_of(q):
+def yaw_from_quaternion(q):
     return math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
 
 
-class Phase3Node(Node):
+class ApproachTagNode(Node):
 
     def __init__(self):
         super().__init__('phase3_ekf')
-        P = self.declare_parameter
-        # experiment
-        self.trial = P('trial', 0).value
-        results_dir = P('results_dir', '~/SCE672-Phase3-RoboMaster-Odometry/results/trials').value
-        self.start_distance = P('start_distance', 1.50).value   # m, tape: chassis front -> tag at start
-        self.front_offset = P('front_offset', 0.16).value       # m, robot centre -> chassis front
-        self.rate = P('control_rate', 20.0).value
-        # robot conventions (Phase 2: the driver's +x points AWAY from the camera side)
-        self.drive_sign = P('drive_sign', -1.0).value           # cmd_vel.linear.x = drive_sign * v
-        self.odom_v_sign = P('odom_v_sign', -1.0).value         # v = odom_v_sign * odom forward speed
-        self.odom_w_sign = P('odom_w_sign', 1.0).value
-        self.odom_source = P('odom_source', 'twist').value      # 'twist' or 'pose' (differentiate pose)
-        # camera measurement
-        self.use_range = P('use_tag_range', True).value         # False = bearing only (for the report)
-        self.tag_max_age = P('tag_max_age', 0.30).value         # s
-        self.min_margin = P('min_decision_margin', 20.0).value
-        # EKF noise (standard deviations)
-        sa, sal = P('sigma_accel', 0.5).value, P('sigma_alpha', 1.0).value
-        qp, qt = P('q_pos', 1e-4).value, P('q_theta', 1e-4).value
-        rv, rw = P('r_odom_v', 0.02).value, P('r_odom_w', 0.03).value
-        rd, rp = P('r_tag_d', 0.03).value, P('r_tag_phi', 0.02).value
-        p0_pos = P('p0_pos', 0.02).value                        # start placement accuracy (m)
-        p0 = [p0_pos, p0_pos, P('p0_theta', 0.035).value, 0.01, 0.01]
-        gate = P('tag_gate', 9.21).value
-        self.input_tau = P('input_tau', 0.3).value              # s, inner speed-loop lag; 0 = u = 0
-        # controller
-        cp = ControllerParams(
-            stop_distance=P('stop_distance', 0.40).value, v_max=P('v_max', 0.15).value,
-            v_min=P('v_min', 0.03).value, k_v=P('k_v', 0.6).value, a_max=P('a_max', 0.25).value,
-            k_heading=P('k_heading', 1.0).value, w_max=P('w_max', 0.30).value,
-            tag_settle=P('tag_settle', 10).value, wait_timeout=P('wait_timeout', 15.0).value,
-            hold_time=P('hold_time', 2.0).value, tof_brake=P('tof_brake', 0.15).value,
-            drive_timeout=P('drive_timeout', 30.0).value)
-        cp.max_travel = self.start_distance - cp.stop_distance + 0.15
-        # camera arm guard: the camera calibration is only valid at the saved arm pose
-        self.arm_check = P('arm_check', True).value
-        self.arm_saved = (P('arm_x_saved', 0.123).value, P('arm_z_saved', 0.067).value)
-        self.arm_tol = P('arm_tolerance', 0.006).value
 
-        self.tag_xy = (self.start_distance + self.front_offset, 0.0)
-        self.ekf = EKF(x0=np.zeros(5), P0=np.diag(np.square(p0)), tag_xy=self.tag_xy,
-                       q_accel=(sa ** 2, sal ** 2), q_pose=(qp, qp, qt),
-                       R_odom=np.diag([rv ** 2, rw ** 2]), R_tag=np.diag([rd ** 2, rp ** 2]), gate=gate)
-        self.ctrl = StraightLineController(cp)
+        def param(name, default):
+            return self.declare_parameter(name, default).value
 
-        self.params = dict(
-            start_distance=self.start_distance, front_offset=self.front_offset, tag_xy=list(self.tag_xy),
-            control_rate=self.rate, drive_sign=self.drive_sign, odom_v_sign=self.odom_v_sign,
-            odom_w_sign=self.odom_w_sign, odom_source=self.odom_source, use_tag_range=self.use_range,
-            sigma_accel=sa, sigma_alpha=sal, q_pos=qp, q_theta=qt, r_odom_v=rv, r_odom_w=rw, r_tag_d=rd,
-            r_tag_phi=rp, p0=p0, tag_gate=gate, input_tau=self.input_tau, controller=vars(cp))
-        self.log = TrialLogger(results_dir, self.trial, {
-            'start_distance': self.start_distance, 'stop_distance': cp.stop_distance,
-            'front_offset': self.front_offset, 'params': self.params})
+        # --- experiment setup (must not change between trials)
+        self.trial_number = param('trial', 0)
+        results_dir = param('results_dir', '~/SCE672-Phase3-RoboMaster-Odometry/results/trials')
+        self.start_distance = param('start_distance', 1.50)
+        self.front_offset = param('front_offset', 0.16)
+        rate_hz = param('control_rate', 20.0)
 
-        # latest sensor values
-        self.odom = None                 # (v, w) in the mission frame
-        self.odom_new = False
-        self.odom_prev = None            # (stamp, x, y, yaw) for odom_source = 'pose'
-        self.s_odom = 0.0                # odometry-only distance travelled (prediction without correction)
-        self.tag = None                  # (d_front, phi, receive_time)
-        self.tag_new = False
-        self.tof = None
-        self.arm_pos = None
-        self.arm_ok = not self.arm_check
-        # counters and results
-        self.n_odom = self.n_tag = self.n_tag_rej = 0
-        self.last_K = None
-        self.hold_cam = []               # camera distances while HOLDING (robot at rest)
-        self.t_drive = None
-        self.w_cmd = 0.0                 # last commanded turn rate
-        self.done = False
+        # --- sign conventions of this particular robot (found in Phase 2 with the wheels in the air)
+        self.drive_sign = param('drive_sign', -1.0)        # driver's +x points away from the camera
+        self.odom_speed_sign = param('odom_v_sign', -1.0)
+        self.odom_turn_sign = param('odom_w_sign', 1.0)
+        self.odom_source = param('odom_source', 'twist')   # 'pose' if the driver leaves twist empty
+
+        # --- camera handling
+        self.use_tag_range = param('use_tag_range', True)
+        self.tag_max_age = param('tag_max_age', 0.30)       # s, older readings are skipped
+        self.min_tag_quality = param('min_decision_margin', 20.0)
+
+        # --- noise levels, all as standard deviations
+        accel_std, ang_accel_std = param('sigma_accel', 0.5), param('sigma_alpha', 1.0)
+        slip_xy, slip_heading = param('q_pos', 1e-4), param('q_theta', 1e-4)
+        odom_speed_std, odom_turn_std = param('r_odom_v', 0.02), param('r_odom_w', 0.03)
+        tag_range_std, tag_bearing_std = param('r_tag_d', 0.03), param('r_tag_phi', 0.02)
+        start_pos_std = param('p0_pos', 0.02)
+        start_heading_std = param('p0_theta', 0.035)
+        outlier_limit = param('tag_gate', 9.21)
+        self.speed_lag = param('input_tau', 0.3)            # s, how slowly the chassis follows cmd_vel
+
+        # --- controller
+        drive = DriveSettings(
+            stop_distance=param('stop_distance', 0.40), max_speed=param('max_speed', 0.15),
+            min_speed=param('min_speed', 0.03), slowdown_gain=param('slowdown_gain', 0.6),
+            max_accel=param('max_accel', 0.25), steer_gain=param('steer_gain', 1.0),
+            max_turn_rate=param('max_turn_rate', 0.30), fixes_before_start=param('fixes_before_start', 10),
+            wait_limit=param('wait_limit', 15.0), settle_time=param('settle_time', 2.0),
+            tof_stop=param('tof_stop', 0.15), drive_limit=param('drive_limit', 30.0))
+        drive.max_travel = self.start_distance - drive.stop_distance + 0.15   # a bit past the planned stop
+
+        # --- camera arm: the range calibration only holds at the pose it was done at
+        self.check_arm = param('arm_check', True)
+        self.saved_arm_pose = (param('arm_x_saved', 0.123), param('arm_z_saved', 0.067))
+        self.arm_tolerance = param('arm_tolerance', 0.006)
+
+        self.tag_position = (self.start_distance + self.front_offset, 0.0)
+        start_std = [start_pos_std, start_pos_std, start_heading_std, 0.01, 0.01]
+        self.ekf = RobotEKF(
+            initial_state=np.zeros(5), initial_cov=np.diag(np.square(start_std)),
+            tag_position=self.tag_position,
+            accel_noise_var=(accel_std ** 2, ang_accel_std ** 2),
+            slip_noise_rate=(slip_xy, slip_xy, slip_heading),
+            odom_noise_cov=np.diag([odom_speed_std ** 2, odom_turn_std ** 2]),
+            tag_noise_cov=np.diag([tag_range_std ** 2, tag_bearing_std ** 2]),
+            outlier_limit=outlier_limit)
+        self.controller = ApproachController(drive)
+
+        settings_used = dict(
+            start_distance=self.start_distance, front_offset=self.front_offset, tag_position=list(self.tag_position),
+            control_rate=rate_hz, drive_sign=self.drive_sign, odom_v_sign=self.odom_speed_sign,
+            odom_w_sign=self.odom_turn_sign, odom_source=self.odom_source, use_tag_range=self.use_tag_range,
+            sigma_accel=accel_std, sigma_alpha=ang_accel_std, q_pos=slip_xy, q_theta=slip_heading,
+            r_odom_v=odom_speed_std, r_odom_w=odom_turn_std, r_tag_d=tag_range_std, r_tag_phi=tag_bearing_std,
+            start_std=start_std, tag_gate=outlier_limit, input_tau=self.speed_lag, drive=vars(drive))
+        self.recorder = TrialRecorder(results_dir, self.trial_number, {
+            'start_distance': self.start_distance, 'stop_distance': drive.stop_distance,
+            'front_offset': self.front_offset, 'params': settings_used})
+
+        # latest sensor data
+        self.odom_reading = None            # (speed, turn_rate) in the trial frame
+        self.odom_is_new = False
+        self.prev_odom = None               # (stamp, x, y, yaw)
+        self.odom_only_travel = 0.0         # summed odometry distance, never corrected by the camera
+        self.tag_reading = None             # (front distance, bearing, time received)
+        self.tag_is_new = False
+        self.tof_range = None
+        self.arm_pose = None
+        self.arm_ready = not self.check_arm
+
+        # counters for the summary
+        self.odom_updates = 0
+        self.tag_updates = 0
+        self.tag_rejected = 0
+        self.last_gain = None
+        self.camera_at_rest = []            # camera distances while stopped, for the camera-only baseline
+        self.drive_started_at = None
+        self.turn_cmd = 0.0
+        self.finished = False
 
         self.cmd_pub = self.create_publisher(Twist, 'cmd_vel', 10)
         self.state_pub = self.create_publisher(Float32MultiArray, 'ekf/state', 10)
@@ -123,195 +139,201 @@ class Phase3Node(Node):
         self.create_subscription(Range, 'range_0', self.on_tof, qos_profile_sensor_data)
         self.create_subscription(PointStamped, 'arm_position', self.on_arm, 10)
 
-        self.t0 = self.t_last = self.now()
+        self.t_start = self.t_prev = self.now()
         self.next_print = 0.0
-        self.create_timer(1.0 / self.rate, self.tick)
-        self.get_logger().info(f'Trial {self.trial}: start {self.start_distance:.3f} m, stop '
-                               f'{cp.stop_distance:.3f} m, tag at x={self.tag_xy[0]:.3f} m. Folder {self.log.dir}')
+        self.create_timer(1.0 / rate_hz, self.tick)
+        self.get_logger().info(
+            f'Trial {self.trial_number}: start {self.start_distance:.3f} m, stop {drive.stop_distance:.3f} m, '
+            f'tag at x = {self.tag_position[0]:.3f} m. Logging to {self.recorder.folder}')
 
-    # ------------------------------------------------------------ inputs
+    # ------------------------------------------------------------------ callbacks
     def now(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def on_odom(self, msg):
         stamp = msg.header.stamp.sec + 1e-9 * msg.header.stamp.nanosec
         if self.odom_source == 'pose':
-            p, yaw = msg.pose.pose.position, yaw_of(msg.pose.pose.orientation)
-            prev, self.odom_prev = self.odom_prev, (stamp, p.x, p.y, yaw)
+            # Work speed out from two poses in a row. Needed only if the driver doesn't fill in twist.
+            pos, yaw = msg.pose.pose.position, yaw_from_quaternion(msg.pose.pose.orientation)
+            prev, self.prev_odom = self.prev_odom, (stamp, pos.x, pos.y, yaw)
             if prev is None or stamp - prev[0] <= 1e-3:
                 return
             dt = stamp - prev[0]
-            fwd = ((p.x - prev[1]) * math.cos(prev[3]) + (p.y - prev[2]) * math.sin(prev[3])) / dt
-            v_raw, w_raw = fwd, wrap(yaw - prev[3]) / dt
+            forward = (pos.x - prev[1]) * math.cos(prev[3]) + (pos.y - prev[2]) * math.sin(prev[3])
+            raw_speed, raw_turn = forward / dt, wrap_angle(yaw - prev[3]) / dt
         else:
-            v_raw, w_raw = msg.twist.twist.linear.x, msg.twist.twist.angular.z
-            prev = self.odom_prev
-            self.odom_prev = (stamp, 0.0, 0.0, 0.0)
+            raw_speed, raw_turn = msg.twist.twist.linear.x, msg.twist.twist.angular.z
+            prev, self.prev_odom = self.prev_odom, (stamp, 0.0, 0.0, 0.0)
             dt = 0.0 if prev is None else max(0.0, min(stamp - prev[0], 0.5))
-        v, w = self.odom_v_sign * v_raw, self.odom_w_sign * w_raw
-        self.s_odom += v * dt                        # dead reckoning: what odometry alone would say
-        self.odom, self.odom_new = (v, w), True
+
+        speed = self.odom_speed_sign * raw_speed      # positive = toward the tag
+        turn_rate = self.odom_turn_sign * raw_turn
+        self.odom_only_travel += speed * dt           # what wheels alone would say, for comparison
+        self.odom_reading, self.odom_is_new = (speed, turn_rate), True
 
     def on_tag(self, msg):
-        d, phi, margin = float(msg.data[0]), float(msg.data[1]), float(msg.data[2])
-        if margin >= self.min_margin:
-            self.tag, self.tag_new = (d, phi, self.now()), True
+        front_dist, bearing, quality = float(msg.data[0]), float(msg.data[1]), float(msg.data[2])
+        if quality >= self.min_tag_quality:            # weak detections are usually blur or partial tags
+            self.tag_reading, self.tag_is_new = (front_dist, bearing, self.now()), True
 
     def on_tof(self, msg):
-        self.tof = float(msg.range)
+        self.tof_range = float(msg.range)
 
     def on_arm(self, msg):
-        self.arm_pos = (msg.point.x, msg.point.z)
+        self.arm_pose = (msg.point.x, msg.point.z)
 
-    def arm_error(self):
-        if self.arm_pos is None:
-            return None
-        return math.dist(self.arm_pos, self.arm_saved)
+    def arm_offset(self):
+        return None if self.arm_pose is None else math.dist(self.arm_pose, self.saved_arm_pose)
 
-    # ------------------------------------------------------------ main loop
+    # ------------------------------------------------------------------ main loop
     def tick(self):
-        if self.done:
+        if self.finished:
             return
         now = self.now()
-        dt = min(max(now - self.t_last, 1e-3), 0.2)
-        self.t_last = now
-        f = self.ekf
-        row = {'t': now - self.t0}
+        dt = min(max(now - self.t_prev, 1e-3), 0.2)
+        self.t_prev = now
+        ekf = self.ekf
+        log = {'t': now - self.t_start}
 
-        # 1. predict. u = (a, alpha): the chassis speed loop pulls v toward the command with lag input_tau
-        if self.input_tau > 0:
-            u = ((self.ctrl.v_cmd - f.x[V]) / self.input_tau, (self.w_cmd - f.x[W]) / self.input_tau)
+        # 1) predict. The chassis speed loop lags, so model it as a(t) = (commanded - current) / lag
+        if self.speed_lag > 0:
+            accel_input = ((self.controller.speed_cmd - ekf.state[IDX_SPEED]) / self.speed_lag,
+                           (self.turn_cmd - ekf.state[IDX_TURN_RATE]) / self.speed_lag)
         else:
-            u = (0.0, 0.0)
-        f.predict(u, dt)
+            accel_input = (0.0, 0.0)
+        ekf.predict(accel_input, dt)
 
-        # 2. odometry correction
-        if self.odom_new:
-            f.update_odom(*self.odom)
-            self.n_odom += 1
-        if self.odom is not None:
-            row.update(odom_v=self.odom[0], odom_w=self.odom[1], odom_new=self.odom_new)
-        self.odom_new = False
+        # 2) correct with odometry, only when a new /odom message arrived since last tick
+        if self.odom_is_new:
+            ekf.correct_with_odom(*self.odom_reading)
+            self.odom_updates += 1
+        if self.odom_reading is not None:
+            log.update(odom_speed=self.odom_reading[0], odom_turn=self.odom_reading[1], odom_new=self.odom_is_new)
+        self.odom_is_new = False
 
-        # 3. camera correction (only fresh readings)
-        if self.tag is not None:
-            d_front, phi, t_rx = self.tag
-            row.update(tag_d=d_front, tag_phi=phi, tag_new=self.tag_new)
-            if self.tag_new and now - t_rx <= self.tag_max_age:
-                res = f.update_tag(d_front + self.front_offset, phi, use_range=self.use_range)
-                row.update(tag_used=res['accepted'], tag_nis=res['nis'])
-                if res['accepted']:
-                    self.n_tag += 1
-                    self.last_K = res['K']
-                    for i in range(5):
-                        for j in range(res['K'].shape[1]):
-                            row[f'K{i}{j}'] = float(res['K'][i, j])
+        # 3) correct with the camera. The detector reports front -> tag, the model wants centre -> tag
+        if self.tag_reading is not None:
+            front_dist, bearing, received_at = self.tag_reading
+            log.update(tag_range=front_dist, tag_bearing=bearing, tag_new=self.tag_is_new)
+            if self.tag_is_new and now - received_at <= self.tag_max_age:
+                result = ekf.correct_with_tag(front_dist + self.front_offset, bearing, self.use_tag_range)
+                log.update(tag_used=result['accepted'], tag_nis=result['nis'])
+                if result['accepted']:
+                    self.tag_updates += 1
+                    self.last_gain = result['gain']
+                    for r in range(5):
+                        for c in range(result['gain'].shape[1]):
+                            log[f'K{r}{c}'] = float(result['gain'][r, c])
                 else:
-                    self.n_tag_rej += 1
-                if self.ctrl.state == HOLDING:
-                    self.hold_cam.append(d_front)
-        self.tag_new = False
+                    self.tag_rejected += 1
+                if self.controller.mode == HOLDING:
+                    self.camera_at_rest.append(front_dist)
+        self.tag_is_new = False
 
-        # 4. control
-        d_est, sigma_d = f.distance_to_tag(self.front_offset)
-        heading_err = h_tag(f.x, self.tag_xy)[1]
-        travelled = math.hypot(f.x[PX], f.x[PY])
-        err = self.arm_error()
-        if not self.arm_ok:
-            if err is not None and err <= self.arm_tol:
-                self.arm_ok = True
-                self.get_logger().info(f'Arm pose OK ({err * 1000:.1f} mm from saved). Trial starts.')
+        # 4) control, using the filtered estimate
+        d_est, sigma_d = ekf.distance_from_front(self.front_offset)
+        bearing_est = expected_tag_reading(ekf.state, self.tag_position)[1]
+        travelled = math.hypot(ekf.state[IDX_X], ekf.state[IDX_Y])
+        arm_off = self.arm_offset()
+        if not self.arm_ready:
+            if arm_off is not None and arm_off <= self.arm_tolerance:
+                self.arm_ready = True
+                self.get_logger().info(f'Camera arm in place ({arm_off * 1000:.1f} mm off). Starting.')
             else:
-                self.get_logger().warn('Waiting for the saved camera arm pose '
-                                       f'({"no arm_position yet" if err is None else f"{err * 1000:.0f} mm off"})',
+                status = 'no arm_position yet' if arm_off is None else f'{arm_off * 1000:.0f} mm off'
+                self.get_logger().warn(f'Waiting for the saved camera arm pose ({status})',
                                        throttle_duration_sec=2.0)
-            v, w = 0.0, 0.0
+            speed, turn = 0.0, 0.0
         else:
-            prev = self.ctrl.state
-            if self.arm_check and err is not None and err > self.arm_tol:
-                v, w = self.ctrl.abort(now, f'camera arm moved {err * 1000:.0f} mm (safety)')
+            mode_before = self.controller.mode
+            if self.check_arm and arm_off is not None and arm_off > self.arm_tolerance:
+                speed, turn = self.controller.emergency_stop(now, f'camera arm moved {arm_off * 1000:.0f} mm (safety)')
             else:
-                v, w = self.ctrl.step(now, dt, d_est, heading_err, travelled, self.n_tag, self.tof)
-            if self.ctrl.state != prev:
-                if self.ctrl.state == DRIVING:
-                    self.t_drive = now
-                extra = f' ({self.ctrl.stop_reason})' if self.ctrl.state in (HOLDING, DONE) else ''
-                self.get_logger().info(f'{prev} -> {self.ctrl.state}{extra}')
-        self.w_cmd = w
-        self.send(v, w)
+                speed, turn = self.controller.update(now, dt, d_est, bearing_est, travelled,
+                                                     self.tag_updates, self.tof_range)
+            if self.controller.mode != mode_before:
+                if self.controller.mode == DRIVING:
+                    self.drive_started_at = now
+                why = f' ({self.controller.stop_reason})' if self.controller.mode in (HOLDING, DONE) else ''
+                self.get_logger().info(f'{mode_before} -> {self.controller.mode}{why}')
+        self.turn_cmd = turn
+        self.send(speed, turn)
 
-        # 5. log
-        d_odom_only = self.start_distance - self.s_odom
-        x, Pm = f.x, f.P
-        row.update(state=self.ctrl.state, v_cmd=v, w_cmd=w, tof=self.tof if self.tof is not None else '',
-                   px=x[PX], py=x[PY], theta=x[TH], v=x[V], w=x[W], d_est=d_est, sigma_d=sigma_d,
-                   d_odom_only=d_odom_only)
-        for i in range(5):
-            for j in range(5):
-                row[f'P{i}{j}'] = float(Pm[i, j])
-        self.log.log_step(row)
-        self.state_pub.publish(Float32MultiArray(data=[float(v_) for v_ in (*x, d_est, sigma_d)]))
-        if row['t'] >= self.next_print:
-            cam = f'{self.tag[0]:.3f}' if self.tag is not None else '  -  '
-            print(f't={row["t"]:5.1f}s {self.ctrl.state:8s} d_est={d_est:.3f}±{sigma_d:.3f} m  camera={cam} m  '
-                  f'odom-only={d_odom_only:.3f} m  v={x[V]:+.3f} m/s', flush=True)
+        # 5) log this tick
+        d_odom_only = self.start_distance - self.odom_only_travel
+        s, P = ekf.state, ekf.cov
+        log.update(mode=self.controller.mode, speed_cmd=speed, turn_cmd=turn,
+                   tof='' if self.tof_range is None else self.tof_range,
+                   x=s[IDX_X], y=s[IDX_Y], heading=s[IDX_HEADING], speed=s[IDX_SPEED], turn_rate=s[IDX_TURN_RATE],
+                   d_est=d_est, sigma_d=sigma_d, d_odom_only=d_odom_only)
+        for r in range(5):
+            for c in range(5):
+                log[f'P{r}{c}'] = float(P[r, c])
+        self.recorder.write_step(log)
+        self.state_pub.publish(Float32MultiArray(data=[float(v) for v in (*s, d_est, sigma_d)]))
+
+        if log['t'] >= self.next_print:
+            cam = '  -  ' if self.tag_reading is None else f'{self.tag_reading[0]:.3f}'
+            print(f't={log["t"]:5.1f}s {self.controller.mode:8s} d_est={d_est:.3f}±{sigma_d:.3f} m  '
+                  f'camera={cam} m  odom-only={d_odom_only:.3f} m  v={s[IDX_SPEED]:+.3f} m/s', flush=True)
             self.next_print += 0.5
 
-        if self.ctrl.state == DONE:
-            self.finish(valid=self.ctrl.stop_reason.startswith('EKF'))   # safety stops are not valid trials
+        if self.controller.mode == DONE:
+            # only a stop on the filtered distance counts as a proper trial
+            self.finish(valid=self.controller.stop_reason.startswith('EKF'))
 
-    def send(self, v, w):
+    def send(self, speed, turn_rate):
         cmd = Twist()
-        cmd.linear.x = float(self.drive_sign * v)
-        cmd.angular.z = float(w)
+        cmd.linear.x = float(self.drive_sign * speed)
+        cmd.angular.z = float(turn_rate)
         self.cmd_pub.publish(cmd)
 
-    # ------------------------------------------------------------ end of trial
+    # ------------------------------------------------------------------ end of trial
     def finish(self, valid, reason=None):
-        if self.done:
+        if self.finished:
             return
-        self.done = True
-        for _ in range(5):
+        self.finished = True
+        for _ in range(5):                      # repeat in case one message gets lost on Wi-Fi
             self.send(0.0, 0.0)
-        d_est, sigma_d = self.ekf.distance_to_tag(self.front_offset)
-        summary = {
+        d_est, sigma_d = self.ekf.distance_from_front(self.front_offset)
+        final = {
             'valid': bool(valid),
-            'stop_reason': reason or self.ctrl.stop_reason,
-            'd_est_final': d_est,                              # EKF: prediction + correction
-            'sigma_d_final': sigma_d,                          # 1-sigma from P
-            'd_cam_final': statistics.median(self.hold_cam) if self.hold_cam else None,   # camera alone, at rest
-            'd_odom_only_final': self.start_distance - self.s_odom,                       # odometry alone
-            'x_final': [float(v) for v in self.ekf.x],
-            'P_final': matrix_to_list(self.ekf.P),
-            'K_last_tag': matrix_to_list(self.last_K),
-            'n_odom_updates': self.n_odom,
-            'n_tag_updates': self.n_tag,
-            'n_tag_rejected': self.n_tag_rej,
-            'drive_time_s': None if self.t_drive is None else self.now() - self.t_drive,
+            'stop_reason': reason or self.controller.stop_reason,
+            'd_est_final': d_est,
+            'sigma_d_final': sigma_d,
+            'd_cam_final': statistics.median(self.camera_at_rest) if self.camera_at_rest else None,
+            'd_odom_only_final': self.start_distance - self.odom_only_travel,
+            'x_final': [float(v) for v in self.ekf.state],
+            'P_final': as_nested_list(self.ekf.cov),
+            'K_last_tag': as_nested_list(self.last_gain),
+            'n_odom_updates': self.odom_updates,
+            'n_tag_updates': self.tag_updates,
+            'n_tag_rejected': self.tag_rejected,
+            'drive_time_s': None if self.drive_started_at is None else self.now() - self.drive_started_at,
         }
-        path = self.log.finish(summary)
-        self.get_logger().info(f'Trial {self.trial} done ({summary["stop_reason"]}): d_est = {d_est:.3f} '
-                               f'± {sigma_d:.3f} m. Now tape the chassis front -> tag distance and run '
-                               f'scripts/add_measurement.py. Summary: {path}')
+        path = self.recorder.write_summary(final)
+        self.get_logger().info(
+            f'Trial {self.trial_number} done ({final["stop_reason"]}): d_est = {d_est:.3f} ± {sigma_d:.3f} m. '
+            f'Tape the front -> tag distance, then run scripts/add_measurement.py. Summary: {path}')
 
-    def stop(self):
+    def shutdown(self):
         for _ in range(5):
             self.send(0.0, 0.0)
-        if not self.done:
+        if not self.finished:
             self.finish(valid=False, reason='interrupted (Ctrl+C)')
 
 
 def main():
-    # keep the ROS context alive on Ctrl+C so the zero-velocity commands can still be published
+    # keep rclpy alive after Ctrl+C so the stop commands below still go out
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
-    node = Phase3Node()
+    node = ApproachTagNode()
     try:
-        while rclpy.ok() and not node.done:
+        while rclpy.ok() and not node.finished:
             rclpy.spin_once(node, timeout_sec=0.05)
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop()                  # zero velocity on every exit path
+        node.shutdown()                         # robot gets a zero command whatever happened
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
