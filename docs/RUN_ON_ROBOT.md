@@ -5,7 +5,7 @@ of everything you measure.
 
 ## 1. Install the package
 ```bash
-cd ~ && git clone [INSERT_GITHUB_REPO_URL] SCE672-Phase3-RoboMaster-Odometry
+cd ~ && git clone https://github.com/Ziad-Behairy/SCE672-Phase3-RoboMaster-Odometry SCE672-Phase3-RoboMaster-Odometry
 ln -s ~/SCE672-Phase3-RoboMaster-Odometry/src/rm_odom_ekf ~/ros2_ws/src/rm_odom_ekf
 cd ~/ros2_ws && colcon build --symlink-install --packages-select rm_odom_ekf
 source ~/rm_setup.sh && source ~/ros2_ws/install/setup.bash

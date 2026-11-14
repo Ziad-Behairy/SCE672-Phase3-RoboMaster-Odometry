@@ -1,6 +1,6 @@
 # GitHub setup (Deliverable 1)
 
-Repository: **SCE672-Phase3-RoboMaster-Odometry** (public). Link for the report/slides: **[INSERT_GITHUB_REPO_URL]**
+Repository: **SCE672-Phase3-RoboMaster-Odometry** (public). Link for the report/slides: **https://github.com/Ziad-Behairy/SCE672-Phase3-RoboMaster-Odometry**
 
 ## Folder layout
 ```
@@ -21,11 +21,11 @@ git commit -m "Phase 3: 5-state EKF, straight-line controller, trial logger and 
 gh repo create SCE672-Phase3-RoboMaster-Odometry --public --source . --push
 gh repo view --web
 ```
-Then replace `[INSERT_GITHUB_REPO_URL]` in `README.md` and the docs with the real link.
+(Done on 2026-11-15: the repo exists and the link below is filled in.)
 
 ## Ubuntu: get the code, run the trials, push the results
 ```bash
-cd ~ && git clone [INSERT_GITHUB_REPO_URL] SCE672-Phase3-RoboMaster-Odometry
+cd ~ && git clone https://github.com/Ziad-Behairy/SCE672-Phase3-RoboMaster-Odometry SCE672-Phase3-RoboMaster-Odometry
 cd ~/SCE672-Phase3-RoboMaster-Odometry
 # ... calibration and trials (docs/RUN_ON_ROBOT.md) ...
 git add src/rm_odom_ekf/config/robot.yaml results

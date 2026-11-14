@@ -12,7 +12,7 @@ throughout by a **5-state Extended Kalman Filter**:
 
 8–10 trials are compared with a tape measurement: $e = d_{est} - d_{meas}$, MAE, range, bias, σ, covariance.
 
-**Code:** [INSERT_GITHUB_REPO_URL] · **Video:** [INSERT_YOUTUBE_VIDEO_URL]
+**Code:** https://github.com/Ziad-Behairy/SCE672-Phase3-RoboMaster-Odometry · **Video:** [INSERT_YOUTUBE_VIDEO_URL]
 
 ## The 7 presentation deliverables
 
