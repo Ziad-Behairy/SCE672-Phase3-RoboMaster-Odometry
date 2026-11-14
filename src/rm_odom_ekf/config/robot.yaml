@@ -1,0 +1,57 @@
+# Robot and experiment parameters for SCE-672 Phase 3. Values marked MEASURE must be measured on the robot
+# before trial 1 (docs/RUN_ON_ROBOT.md). Values marked P2 come from the Phase 2 measurements (2026-10-26).
+tag_detector:
+  ros__parameters:
+    target_id: 3               # tag36h11 ID of the printed tag
+    tag_size: 0.25             # MEASURE: black edge of the printed tag with a ruler (m)
+    quad_decimate: 1.0
+    camera_pitch_deg: 5.3      # P2: camera pitch at the saved arm pose
+    range_scale: 1.0           # MEASURE: python3 scripts/calibrate_range.py --fit
+    range_offset: -0.149       # MEASURE: same fit (P2 camera -> chassis front = 0.149 m)
+
+phase3_ekf:
+  ros__parameters:
+    # experiment (keep identical for all trials)
+    start_distance: 1.50       # m, tape: chassis front -> tag face at the start
+    stop_distance: 0.40        # m, chassis front -> tag face
+    front_offset: 0.16         # MEASURE: robot centre -> chassis front (m)
+    control_rate: 20.0
+    # robot conventions
+    drive_sign: -1.0           # P2: the driver's +x points AWAY from the camera side
+    odom_v_sign: -1.0          # CHECK: docs/RUN_ON_ROBOT.md, step 4 (odom speed must be + toward the tag)
+    odom_w_sign: 1.0
+    odom_source: twist         # 'pose' if /odom twist is all zeros on your driver
+    # camera measurement
+    use_tag_range: true        # false = bearing only (comparison run for the report)
+    tag_max_age: 0.30
+    min_decision_margin: 20.0
+    # EKF noise, standard deviations
+    sigma_accel: 0.5           # m/s^2   unknown linear acceleration (process noise via G)
+    sigma_alpha: 1.0           # rad/s^2 unknown angular acceleration
+    q_pos: 1.0e-4              # m^2/s   wheel slip on px, py
+    q_theta: 1.0e-4            # rad^2/s
+    r_odom_v: 0.02             # m/s     /odom speed noise
+    r_odom_w: 0.03             # rad/s   /odom turn-rate noise
+    r_tag_d: 0.03              # m       camera range noise
+    r_tag_phi: 0.02            # rad     camera bearing noise (about 1.1 deg)
+    p0_pos: 0.02               # m       start placement accuracy
+    p0_theta: 0.035            # rad     start heading accuracy (about 2 deg)
+    tag_gate: 9.21             # chi-square 99 %, 2 values: rejects wild camera readings
+    input_tau: 0.3             # s, chassis speed-loop lag used to form u = (a, alpha)
+    # controller
+    v_max: 0.15
+    v_min: 0.03
+    k_v: 0.6
+    a_max: 0.25
+    k_heading: 1.0
+    w_max: 0.30
+    tag_settle: 10
+    wait_timeout: 15.0
+    hold_time: 2.0
+    tof_brake: 0.15
+    drive_timeout: 30.0
+    # camera arm guard (P2 saved pose; re-save if you move the arm for the upright tag)
+    arm_check: true
+    arm_x_saved: 0.123
+    arm_z_saved: 0.067
+    arm_tolerance: 0.006
