@@ -6,8 +6,7 @@ Write every measurement in [TRIAL_SHEET.md](TRIAL_SHEET.md) as you go, with the 
 ## What to bring
 - Steel tape measure (mm marks) and a 30 cm ruler
 - Masking tape and a marker for the floor
-- Printed tag36h11 **ID 3** (`docs/apriltags_tag36h11_T1_T2_T3_A4.pdf`, page 3), stuck flat on cardboard
-- Something to stand the tag upright: a box or a wall
+- The Phase 2 tag36h11 **ID 3** print (155 mm black square), taped flat to the floor so it can't curl or slide
 - A box to lift the robot's wheels off the ground
 - Phone and tripod for the video
 - Fully charged battery
@@ -35,13 +34,17 @@ same `colcon build` line. With `--symlink-install` a rebuild takes a few seconds
    error gives a 5 % range error: 7.5 cm at 1.5 m.
 
 ## A3. Set up the scene (keep it identical for all trials)
-1. Stand the tag **upright**, facing where the robot will start. Its **centre at the camera's height** (measure the
-   camera lens height from the floor and match it).
+1. Tape the tag **flat on the floor**, as in Phase 2. Mark its **centre** with a small pencil dot or a cross through
+   the corners. The camera measures to the tag centre, so **every distance in this project goes to the tag centre**.
 2. Pick the **reference point** on the robot: the **middle of the front edge of the chassis** (camera side). Use this
-   one point for every distance in the project.
-3. From the **face of the tag**, tape **1.50 m** along the floor and mark a start line at right angles to that path.
+   one point for every distance.
+3. From the **tag centre**, tape **1.50 m** along the floor and mark a start line at right angles to that path.
 4. Put the robot on the line so its reference point is on the mark and its nose points at the tag. Put tape at both
    front wheels so you can put it back exactly the same way every time. Photograph the setup.
+5. Before going further, check that the tag is seen from the start line (step A7 checks this properly):
+   `ros2 topic echo /tag/range_bearing`. Phase 2 found the 155 mm floor tag only gives about 4 detections/s at 1.5 m.
+   That is enough, because the filter keeps predicting between camera fixes. If it is seen **not at all** at 1.50 m,
+   tell me before changing anything: the fix is either a bigger print or a 1.20 m start.
 
 ## A4. Measure `front_offset` (robot centre → chassis front)
 `/odom` and the filter track the **robot centre**, which is the midpoint between the four wheel axles.
@@ -57,8 +60,12 @@ The camera calibration from Phase 2 holds only at one arm pose (`x 0.123, z 0.06
    ```
 2. Terminal 2: `ros2 topic echo /arm_position --field point`
 3. Set the arm by hand, about 2 cm above the ToF sensor as in Phase 2, until x ≈ 0.123 and z ≈ 0.067.
-4. If you choose a different pose because the tag is upright now, write the x and z you got into
-   `arm_x_saved`/`arm_z_saved`. Then **do A7 at that pose**.
+4. If you end up at a different pose, write the x and z you got into `arm_x_saved`/`arm_z_saved`, then **do A7 at that
+   pose**.
+5. **Check the camera pitch** (`camera_pitch_deg`): start the detector (command in A7 step 1) with the tag about
+   0.8 m in front. Every 5 s it logs `camera from floor tag: height 0.3xx m, pitch +x.x deg down`. Use the average
+   of a few lines. Phase 2 got 0.313 m and 5.3–6.3°. Put the pitch in `camera_pitch_deg`, rebuild, then do A7.
+   The pitch matters because the camera looks down at a floor tag: a wrong pitch makes the far distances wrong.
 
 ## A6. Check the drive and `/odom` directions (2 minutes)
 Clear path toward the tag. Driver running.
@@ -83,14 +90,18 @@ Then turn slowly to the left: `"{angular: {z: 0.3}}"`. `angular.z` should be **p
    ```bash
    ros2 run rm_odom_ekf tag_detector --ros-args --params-file ~/SCE672-Phase3-RoboMaster-Odometry/src/rm_odom_ekf/config/robot.yaml
    ```
-2. Put the robot facing the tag with the reference point at a taped distance. At each of **0.40, 0.70, 1.00, 1.30,
-   1.60 m**, keep the robot still and run (terminal 3):
+2. Put the robot facing the tag with the reference point at a taped distance **to the tag centre**. At each of
+   **0.40, 0.70, 1.00, 1.30, 1.50 m**, keep the robot still and run (terminal 3):
    ```bash
    cd ~/SCE672-Phase3-RoboMaster-Odometry
    python3 scripts/calibrate_range.py --tape 0.40
    ```
-   Each command records 5 s and appends one row to `results/calibration/tag_range.csv`.
-   If it says NOT DETECTED, check the lighting and the tag size.
+   Each command records 5 s and appends one row to `results/calibration/tag_range.csv`. The line also prints
+   detections/s; write it down for 0.40 and 1.50 m.
+   - **NOT DETECTED at 1.50 m**: check the lighting and that the tag is flat, then tell me (bigger print or 1.20 m start).
+   - **NOT DETECTED at 0.40 m**: the tag has dropped below the camera's view. That is allowed: the filter keeps
+     predicting with odometry for the last few centimetres, but `d_cam_final` (the camera-only baseline) will be
+     empty. Tell me and we can move the stop to 0.50 m instead.
 3. Fit and copy the result into `robot.yaml`:
    ```bash
    python3 scripts/calibrate_range.py --fit
@@ -136,7 +147,7 @@ For **N = 1 … 10**:
 3. **Wait** until the terminal prints `Trial N done (...): d_est = 0.xxx ± 0.0xx m`. Copy `d_est`, `±`
    and the stop reason into the trial sheet.
 4. **Measure** with the tape, without moving the robot: from the **reference point** (chassis front middle)
-   straight to the **tag face**, along the floor, read to the **millimetre**. Measure twice and use the average.
+   straight to the **tag centre** mark, along the floor, read to the **millimetre**. Measure twice and use the average.
    Write it on the sheet.
 5. **Log** it:
    ```bash
@@ -173,10 +184,10 @@ The error should be clearly bigger than in the main trials, which shows that ran
 ## If something goes wrong
 | Symptom | Likely cause / fix |
 |---|---|
-| Stays in WAITING, "tag not seen" | Tag too small/far or poorly lit. Check `rqt_image_view /tag/debug_image` for the green box. |
+| Stays in WAITING, "tag not seen" | Tag too far or poorly lit. Check `rqt_image_view /tag/debug_image` for the green box. Detections there but rejected: look at the 3rd number (decision margin) in `/tag/range_bearing`; if it's below 10, lower `min_decision_margin`. |
 | "Waiting for the saved camera arm pose" | The arm isn't at the saved pose (A5). |
 | Robot drives away from the tag | `drive_sign` (A6) |
 | `d_est` goes **up** while driving | `odom_v_sign` (A6) |
 | Many `tag_rejected` in summary.json | Range calibration off (A7) or wrong `tag_size` (A2) |
-| Stops early with `ToF ... (safety)` | Something in front of the ToF sensor, or the tag stand is too close to the path |
+| Stops early with `ToF ... (safety)` | Something in front of the ToF sensor, or the arm is hanging in front of it |
 | Driver disconnects (Wi-Fi) | Use router (STA) mode as in Phase 2 |

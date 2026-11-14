@@ -1,4 +1,5 @@
 """Camera side of the project. Started from my Phase 2 detector and cut down to what Phase 3 needs.
+The tag lies flat on the floor, as in Phase 2.
 
 pupil-apriltags finds tag36h11 ID 3 in camera/image_color and, given the printed tag size and the
 camera intrinsics, returns where the tag sits relative to the camera. From that we publish the two
@@ -23,7 +24,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Float32MultiArray
 
-from rm_odom_ekf.geometry import camera_to_level
+from rm_odom_ekf.geometry import camera_from_floor_tag, camera_to_level
 
 
 class TagDetector(Node):
@@ -31,12 +32,12 @@ class TagDetector(Node):
     def __init__(self):
         super().__init__('tag_detector')
         self.target_id = self.declare_parameter('target_id', 3).value
-        self.tag_size = self.declare_parameter('tag_size', 0.25).value          # measured black edge (m)
+        self.tag_size = self.declare_parameter('tag_size', 0.155).value         # measured black edge (m)
         self.rate = self.declare_parameter('rate', 15.0).value
         self.decimate = self.declare_parameter('quad_decimate', 1.0).value
         self.cam_pitch = np.radians(self.declare_parameter('camera_pitch_deg', 5.3).value)
         self.range_scale = self.declare_parameter('range_scale', 1.0).value
-        self.range_offset = self.declare_parameter('range_offset', -0.149).value  # camera -> chassis front
+        self.range_offset = self.declare_parameter('range_offset', -0.162).value  # camera -> chassis front
         self.save_dir = os.path.expanduser(self.declare_parameter('save_frames_dir', '').value)
         if self.save_dir:
             os.makedirs(self.save_dir, exist_ok=True)
@@ -46,6 +47,7 @@ class TagDetector(Node):
         self.camera_params = None        # (fx, fy, cx, cy)
         self.latest_image = None
         self.n_frames = self.n_hits = 0
+        self.floor_est = None            # (height, pitch, roll) of the camera, worked out from the floor tag
 
         self.image_sub = self.info_sub = None
         self.subscribe_camera()
@@ -98,6 +100,9 @@ class TagDetector(Node):
         if target is None:
             return
         self.n_hits += 1
+        # The tag lies flat, so its normal is the floor normal: that gives the camera height and pitch
+        # directly. Only printed in report(), to check camera_pitch_deg at the saved arm pose.
+        self.floor_est = camera_from_floor_tag(target.pose_R, target.pose_t)
 
         # pose_t is in the optical frame (x right, y down, z out of the lens). The camera looks slightly
         # down, so rotate by the pitch first to get forward/left on the floor plane.
@@ -132,8 +137,13 @@ class TagDetector(Node):
             cv2.imwrite(os.path.join(self.save_dir, f'{stamp_ns}.jpg'), small, [cv2.IMWRITE_JPEG_QUALITY, 85])
 
     def report(self):
-        self.get_logger().info(f'{self.n_frames / 5.0:.1f} frames/s processed, '
-                               f'T{self.target_id} seen in {self.n_hits}')
+        line = f'{self.n_frames / 5.0:.1f} frames/s processed, T{self.target_id} seen in {self.n_hits}'
+        if self.floor_est is not None:
+            height, pitch, roll = self.floor_est
+            line += (f' | camera from floor tag: height {height:.3f} m, pitch {np.degrees(pitch):+.1f} deg down, '
+                     f'roll {np.degrees(roll):+.1f} deg')
+        self.get_logger().info(line)
+        self.floor_est = None
         self.n_frames = self.n_hits = 0
 
 

@@ -64,7 +64,7 @@ def fit():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--tape', type=float, help='tape distance chassis front -> tag face (m)')
+    ap.add_argument('--tape', type=float, help='tape distance chassis front -> tag centre (m)')
     ap.add_argument('--secs', type=float, default=5.0)
     ap.add_argument('--fit', action='store_true')
     args = ap.parse_args()

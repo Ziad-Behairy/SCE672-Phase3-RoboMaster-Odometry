@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Type in the tape-measured final distance of a trial (chassis front -> tag face, metres).
+"""Type in the tape-measured final distance of a trial (chassis front -> tag centre, metres).
 
     python3 scripts/add_measurement.py 3 0.412            # newest folder of trial 3
     python3 scripts/add_measurement.py results/trials/trial_03_20261120_141502 0.412

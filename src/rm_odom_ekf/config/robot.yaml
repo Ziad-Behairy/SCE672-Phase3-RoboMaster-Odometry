@@ -2,18 +2,19 @@
 # before trial 1 (docs/RUN_ON_ROBOT.md). Values marked P2 come from the Phase 2 measurements (2026-10-26).
 tag_detector:
   ros__parameters:
+    # The tag lies flat on the floor (same T3 print as Phase 2). Distances are to the tag CENTRE.
     target_id: 3               # tag36h11 ID of the printed tag
-    tag_size: 0.25             # MEASURE: black edge of the printed tag with a ruler (m)
+    tag_size: 0.155            # P2: black edge measured with a ruler (m). Re-check it
     quad_decimate: 1.0
-    camera_pitch_deg: 5.3      # P2: camera pitch at the saved arm pose
+    camera_pitch_deg: 5.3      # P2 at the saved arm pose. CHECK: the detector log prints it from the floor tag
     range_scale: 1.0           # MEASURE: python3 scripts/calibrate_range.py --fit
-    range_offset: -0.149       # MEASURE: same fit (P2 camera -> chassis front = 0.149 m)
+    range_offset: -0.162       # P2 floor-tag calibration. MEASURE again with the same fit
 
 phase3_ekf:
   ros__parameters:
     # experiment (keep identical for all trials)
-    start_distance: 1.50       # m, tape: chassis front -> tag face at the start
-    stop_distance: 0.40        # m, chassis front -> tag face
+    start_distance: 1.50       # m, tape: chassis front -> tag centre at the start
+    stop_distance: 0.40        # m, chassis front -> tag centre
     front_offset: 0.16         # MEASURE: robot centre -> chassis front (m)
     control_rate: 20.0
     # robot conventions
@@ -24,7 +25,7 @@ phase3_ekf:
     # camera measurement
     use_tag_range: true        # false = bearing only (comparison run for the report)
     tag_max_age: 0.30
-    min_decision_margin: 20.0
+    min_decision_margin: 10.0  # a small floor tag at 1.5 m gives weak detections; CHECK the margin at 1.5 m
     # EKF noise, standard deviations
     sigma_accel: 0.5           # m/s^2   unknown linear acceleration (process noise via G)
     sigma_alpha: 1.0           # rad/s^2 unknown angular acceleration
@@ -50,7 +51,7 @@ phase3_ekf:
     settle_time: 2.0           # s standing still before the final reading
     tof_stop: 0.15             # m, safety only
     drive_limit: 30.0          # s, safety only
-    # camera arm guard (P2 saved pose; re-save if you move the arm for the upright tag)
+    # camera arm guard (P2 saved pose; re-save if you move the arm)
     arm_check: true
     arm_x_saved: 0.123
     arm_z_saved: 0.067

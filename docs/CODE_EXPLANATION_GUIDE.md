@@ -110,11 +110,11 @@ decide where it stops."
 
 **Idea:** look at each image, find tag ID 3, and say how far away it is and how far to the left.
 
-- **L86 `process`**: keeps only the newest image → grayscale → pupil-apriltags gives the tag position →
+- **L88 `process`**: keeps only the newest image → grayscale → pupil-apriltags gives the tag position →
   `camera_to_level` removes the camera's downward tilt → `front_range = scale·forward + offset` (from the tape
   calibration) → `bearing = atan2(left, forward)` → published on `tag/range_bearing`.
-- **L68 `image_watchdog`**: if images stop for 2 s (Wi-Fi), subscribe again.
-- **L116 `publish_debug`**: draws the green box you show in the video.
+- **L70 `image_watchdog`**: if images stop for 2 s (Wi-Fi), subscribe again.
+- **L121 `publish_debug`**: draws the green box you show in the video.
 - `geometry.py`: the tilt maths from Phase 2.
 
 **Say:** "The camera gives range and bearing. Range matters most, because it's the only sensor that sees
