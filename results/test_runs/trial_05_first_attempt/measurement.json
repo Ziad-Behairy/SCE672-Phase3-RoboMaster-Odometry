@@ -1,0 +1,1 @@
+{"measured_final_m": null, "note": "Tape reading 0.495 vs d_est 0.483 / camera 0.482 / odom 0.481 (12 mm off; earlier trials <= 5 mm). Robot coasted 1.7 cm past the 0.500 brake point. User chose to rerun trial 5 instead of re-measuring."}

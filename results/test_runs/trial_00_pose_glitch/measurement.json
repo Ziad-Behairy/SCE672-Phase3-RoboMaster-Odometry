@@ -1,0 +1,1 @@
+{"measured_final_m": 0.520, "note": "odom_source pose. Drive tracked camera within ~1 cm. At t=9.85 s (HOLDING) a pose glitch gave -0.72 m/s, d_est jumped 0.500 -> 0.614, then the chi2 gate rejected the correct camera (NIS 12.5). Before the glitch d_est 0.500, camera 0.500, odom-only 0.507. Fix: odom_max_speed 0.40 / odom_max_turn 1.50."}
