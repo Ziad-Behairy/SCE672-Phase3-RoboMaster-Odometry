@@ -2,8 +2,8 @@
 
 Ziad Aboelkhir, KFUPM, Advanced Robotics (SCE-672), Prof. Aamer Iqbal Bhatti. DJI RoboMaster EP Core, Ubuntu 24.04, ROS 2 Jazzy.
 
-The robot starts **1.50 m** in front of a fixed tag (AprilTag tag36h11, ID 3), detects it, drives straight toward it
-and stops **0.40 m** before it (both measured from the chassis front). Its distance to the tag is estimated
+The robot starts **1.20 m** in front of a fixed tag (AprilTag tag36h11, ID 3), detects it, drives straight toward it
+and stops **0.50 m** before it (both measured from the chassis front). Its distance to the tag is estimated
 throughout by a **5-state Extended Kalman Filter**:
 
 - **Prediction**: unicycle motion model with velocity states, $x=[p_x,p_y,\theta,v,\omega]^T$ (Lecture 11A)
@@ -52,8 +52,20 @@ cd src/rm_odom_ekf && python -m pytest -q test
 ```
 **On the robot:** follow [docs/RUN_ON_ROBOT.md](docs/RUN_ON_ROBOT.md) (install, calibration, sign check, trials).
 
-## Results
-_To be filled after the trials:_ table from `results/summary_table.md`, Fig. 1–2, discussion.
+## Results (10 trials, start 1.20 m, stop 0.50 m)
+| | EKF (predict + correct) | camera only | wheels only |
+|---|---:|---:|---:|
+| **MAE** | **0.28 cm** | 0.29 cm | 1.98 cm |
+| **Range of errors** | **0.96 cm** (−0.48 … +0.48) | 0.95 cm | 6.31 cm |
+| Bias / σ | −0.10 cm / 0.32 cm | | |
+
+Full table: [results/summary_table.md](results/summary_table.md) · figures: [results/figures/](results/figures/) ·
+sensor-removal replay (bearing only 1.98 cm, no camera 2.53 cm): [results/replay/replay_table.md](results/replay/replay_table.md) ·
+report: [report/](report/) (Overleaf: `report/overleaf_upload.zip`) · video: `results/video/phase3_demo.mp4`.
+
+Setup changes found during calibration (details in the report): start 1.20 m instead of 1.50 m (the flat tag is ~10 px
+tall at 1.5 m), stop 0.50 m (the tag leaves the image below 0.47 m), `/odom` speed taken from the pose (the twist field
+lags and over-reads), and a plausibility guard against `/odom` pose glitches.
 
 Reused from Phase 2 ([advanced-robotics-project-2](https://github.com/Ziad-Behairy/advanced-robotics-project-2)):
 the tag detector, camera geometry, robot calibration values and the safe-stop pattern.

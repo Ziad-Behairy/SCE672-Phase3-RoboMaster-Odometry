@@ -1,0 +1,67 @@
+%============================ 1. OVERVIEW =====================================
+\isec{\faCompass}{Problem and Experiment Design}
+\label{sec:overview}
+
+The task is to make the RoboMaster EP Core detect a fixed tag, drive straight towards it and stop before it, while
+estimating its position with \emph{odometry-based prediction} and \emph{sensor-based correction}. The quantity that is
+graded is the final distance to the tag: the robot's own estimate $d_{est}$ is compared with an independent tape
+measurement $d_{meas}$ in every trial, $e = d_{est}-d_{meas}$.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[x=10cm,y=1cm,font=\small]
+  % floor
+  \fill[kfupmlight] (-0.08,-1.25) rectangle (1.52,1.25);
+  % tag
+  \fill[white,draw=ink] (1.36-0.045,-0.45) rectangle (1.36+0.045,0.45);
+  \fill[ink] (1.36-0.028,-0.28) rectangle (1.36+0.028,0.28);
+  \node[below,font=\footnotesize] at (1.36,-0.5) {tag ID 3, flat};
+  \node[below,font=\footnotesize] at (1.36,-0.85) {154\,mm};
+  % robot at start
+  \draw[fill=muted!25,draw=ink,rounded corners=2pt] (0,-0.72) rectangle (0.32,0.72);
+  \node[font=\footnotesize,align=center] at (0.16,0) {EP\\start};
+  \fill[accorange] (0.32,0) circle (0.07);
+  % robot at stop (ghost)
+  \draw[dashed,draw=accpurple,rounded corners=2pt] (0.54,-0.72) rectangle (0.86,0.72);
+  \fill[accorange] (0.86,0) circle (0.07);
+  % lines
+  \draw[thick,muted] (0.32,-1.2) -- (0.32,1.2) node[above,font=\footnotesize]{START};
+  \draw[thick,accpurple] (0.86,-1.2) -- (0.86,1.2) node[above,font=\footnotesize]{STOP};
+  % dimensions
+  \draw[{Latex}-{Latex}] (0.32,-1.05) -- (1.36,-1.05) node[midway,fill=kfupmlight,inner sep=1pt]{$d_0 = 1.20$\,m};
+  \draw[{Latex}-{Latex}] (0.86,0.95) -- (1.36,0.95) node[midway,fill=kfupmlight,inner sep=1pt]{$d_{stop}=0.50$\,m};
+  \draw[{Latex}-{Latex},accblue] (0.16,-0.45) -- (0.32,-0.45) node[midway,below,font=\scriptsize]{$\ell_f$ 0.16};
+  \draw[-{Latex},thick,accorange] (0.36,0) -- (0.5,0);
+  \node[font=\scriptsize,accorange,align=left,anchor=west] at (0.33,0.3) {reference point:\\middle of chassis front};
+\end{tikzpicture}
+\caption{The experiment, to scale along the path. Every distance in this report is measured from the same reference
+point (orange: the middle of the chassis front) to the centre of the tag. The filter tracks the robot centre, which is
+$\ell_f = 0.16$\,m behind the reference point; the conversion is done inside the filter (Section~\ref{sec:method}).}
+\label{fig:setup}
+\end{figure}
+
+\begin{table}[H]
+\centering\small
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\rowcolor{kfupm}\hd{Choice} & \hd{Value and reason}\\
+Start distance $d_0$ & \textbf{1.20\,m} (spec: 1 to 2\,m, recorded and kept for all trials). 1.50\,m was tried first:
+  the flat 154\,mm tag is then only about 10 pixels tall in the 720p image and detection came and went (0 of 20
+  frames in one check), so the start was moved to 1.20\,m, where the tag is detected in 70 to 75 of 75 frames.\\
+Stop distance $d_{stop}$ & \textbf{0.50\,m} (spec: suitable, same for all trials). Below about 0.47\,m the floor tag
+  leaves the bottom of the camera image; stopping at 0.50\,m keeps the camera correction active until the end, so the
+  final estimate is never pure prediction.\\
+Tag & AprilTag tag36h11, ID 3, black square 154\,mm, taped flat on the floor (same print as Phase 2).\\
+Reference point & Middle of the chassis front, for both $d_{est}$ and the tape measurement $d_{meas}$.\\
+Robot and software & DJI RoboMaster EP Core, Ubuntu 24.04, ROS 2 Jazzy, \code{robomaster_ros} driver in router (STA)
+  mode, camera at 720p on the arm at the saved pose $(x,z)=(0.123, 0.067)$\,m.\\
+Trials & 10, all from the same taped start marks, same room, floor, light and configuration.\\
+\end{tabularx}
+\caption{Experiment design.}
+\label{tab:design}
+\end{table}
+
+\begin{notebox}
+\small\lead{Floor.} The trials were run on a woven rug. It is a realistic surface for odometry (the Mecanum rollers
+slip a little on it), and it is one of the error sources quantified in Section~\ref{sec:discussion}.
+\end{notebox}

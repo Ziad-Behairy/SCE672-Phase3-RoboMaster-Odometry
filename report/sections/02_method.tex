@@ -1,0 +1,165 @@
+%============================ 2. METHOD =======================================
+\isec{\faProjectDiagram}{Method: Detection, Prediction, Correction, Control}
+\label{sec:method}
+
+\isub{\faSitemap}{System architecture}
+Two ROS 2 nodes run next to the DJI driver (Figure~\ref{fig:arch}). \code{tag_detector} turns camera images into a
+range and bearing to the tag. \code{phase3_ekf} runs the filter and the controller at 20\,Hz and logs every tick.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}
+  \node[rosnode,minimum width=3.2cm,minimum height=2.6cm] (drv) at (0,0) {robomaster\_driver};
+  \node[rosnode,minimum width=2.8cm] (det) at (6.2,1.6) {tag\_detector};
+  \node[rosnode,minimum width=2.8cm,minimum height=1.6cm] (ekf) at (6.2,-0.9) {phase3\_ekf};
+  \node[blk=3.3cm] (log) at (11.3,-0.9) {\footnotesize steps.csv (20\,Hz: $x$, $P$, $K$, raw readings), summary.json};
+  \draw[arr] (1.6,1.6) -- node[topic,above]{camera/image\_color} (det.west);
+  \draw[arr] (det.south) -- node[topic,right]{tag/range\_bearing $(d,\varphi)$} (ekf.north);
+  \draw[arr] (1.6,-0.4) -- node[topic,above]{odom $(v,\omega)$} (4.8,-0.4);
+  \draw[arr] (1.6,-0.9) -- node[topic,fill=white]{range\_0, arm\_position} (4.8,-0.9);
+  \draw[arr] (4.8,-1.4) -- node[topic,below]{cmd\_vel} (1.6,-1.4);
+  \draw[arr] (ekf.east) -- (log.west);
+\end{tikzpicture}
+\caption{ROS 2 graph. \code{/imu} is deliberately not used: the driver's \code{/odom} already fuses the IMU
+(Lecture 11B), and fusing both would count the same evidence twice.}
+\label{fig:arch}
+\end{figure}
+
+\isub{\faQrcode}{Tag detection: range and bearing from the camera}
+Each 1280$\times$720 frame goes through \code{pupil_apriltags} (tag36h11, full resolution). For tag ID 3 the detector
+returns the tag position $\mathbf t_c$ in the camera optical frame from the known black-square size (154\,mm) and the
+camera intrinsics. The camera looks down at the floor by a pitch $\beta$, so $\mathbf t_c$ is first rotated into a level
+frame, giving the forward and left offsets of the tag:
+\begin{equation}
+  [\,f,\ l,\ u\,]^T = R_x(\beta)\,\mathbf t_c, \qquad
+  d = s\,f + o, \qquad \varphi = \operatorname{atan2}(l, f).
+\end{equation}
+$s$ and $o$ are the range calibration (Section~\ref{sec:setup}); they map the camera's forward offset to the distance
+from the chassis front to the tag centre, the same quantity the tape measures. Detections with a decision margin below
+10 are dropped, and a reading older than 0.30\,s is never used.
+
+\isub{\faChartLine}{Prediction: unicycle model with velocity states (Lecture 11A)}
+The state holds the pose and the velocities, because the chassis follows \code{cmd_vel} with a lag:
+\begin{equation}
+  \mathbf x = [\,p_x,\ p_y,\ \theta,\ v,\ \omega\,]^T,\qquad \mathbf u=[\,a,\ \alpha\,]^T .
+\end{equation}
+The start centre is the origin, $x$ points at the tag, and the tag is a known landmark at
+$\mathbf m = (d_0+\ell_f,\ 0) = (1.36,\ 0)$\,m. Every tick ($dt\approx0.05$\,s):
+\begin{equation}
+\mathbf x_{k+1} = f(\mathbf x_k,\mathbf u_k) =
+\begin{bmatrix} p_x + v\cos\theta\,dt\\ p_y + v\sin\theta\,dt\\ \theta+\omega\,dt\\ v + a\,dt\\ \omega+\alpha\,dt\end{bmatrix},
+\qquad
+a = \frac{v_{cmd}-v}{\tau},\ \ \alpha = \frac{\omega_{cmd}-\omega}{\tau},\ \ \tau = 0.3\,\text{s},
+\end{equation}
+\begin{equation}
+F=\frac{\partial f}{\partial \mathbf x}=
+\begin{bmatrix}1&0&-v\sin\theta\,dt&\cos\theta\,dt&0\\0&1&v\cos\theta\,dt&\sin\theta\,dt&0\\0&0&1&0&dt\\0&0&0&1&0\\0&0&0&0&1\end{bmatrix},
+\quad
+G=\frac{\partial f}{\partial \mathbf u}=\begin{bmatrix}0&0\\0&0\\0&0\\dt&0\\0&dt\end{bmatrix},
+\end{equation}
+\begin{equation}
+P^- = F P F^T + G\,Q\,G^T + Q_{slip}\,dt,\qquad Q=\operatorname{diag}(\sigma_a^2,\sigma_\alpha^2),\quad
+Q_{slip}=\operatorname{diag}(q_p,q_p,q_\theta,0,0).
+\end{equation}
+The first-order lag $a=(v_{cmd}-v)/\tau$ is the input the lecture model needs: it makes the prediction follow the
+commanded speed profile instead of assuming constant velocity. $F$ and $G$ are checked against central differences
+($h=10^{-6}$) in the unit tests (Lecture 11A, slide 18).
+
+\isub{\faCogs}{Correction 1: wheel odometry (Lecture 11B)}
+The driver's \code{/odom} gives the body speed and turn rate, observed directly:
+\begin{equation}
+  \mathbf z_{odom}=[\,v,\ \omega\,]^T,\qquad
+  H_{odom}=\begin{bmatrix}0&0&0&1&0\\0&0&0&0&1\end{bmatrix},\qquad R_{odom}=\operatorname{diag}(0.02^2,\ 0.03^2).
+\end{equation}
+It corrects $v$ and $\omega$ directly and the position only through the $p_{xv}$, $p_{yv}$ terms that $F$ builds in
+$P$. Odometry therefore slows the growth of the position error but cannot remove it: along-track error keeps
+accumulating (Section~\ref{sec:role}). Two driver problems found during the setup changed how $v,\omega$ are obtained
+(Section~\ref{sec:odomfix}): they are differentiated from the \code{/odom} pose, and physically impossible values are
+skipped.
+
+\isub{\faCrosshairs}{Correction 2: camera range and bearing (Lectures 12A, 12B)}
+With $\Delta x = m_x-p_x$, $\Delta y = m_y-p_y$, $q=\Delta x^2+\Delta y^2$:
+\begin{equation}
+h(\mathbf x)=\begin{bmatrix}\sqrt q\\ \operatorname{atan2}(\Delta y,\Delta x)-\theta\end{bmatrix},\qquad
+H_{tag}=\begin{bmatrix}-\Delta x/\sqrt q & -\Delta y/\sqrt q & 0&0&0\\ \Delta y/q & -\Delta x/q & -1&0&0\end{bmatrix},
+\end{equation}
+and the measured range is shifted from the chassis front to the centre, $z_d = d + \ell_f$. The correction is the
+standard EKF update with the bearing innovation wrapped:
+\begin{equation}
+\mathbf e=\begin{bmatrix} z_d - h_d\\ \operatorname{wrap}(z_\varphi-h_\varphi)\end{bmatrix},\quad
+S = H P^- H^T + R_{tag},\quad
+K = P^- H^T S^{-1},\quad
+\mathbf x^+=\mathbf x^-+K\mathbf e,\quad
+P^+=(I-KH)P^-,
+\end{equation}
+with $\operatorname{wrap}(\alpha)=\operatorname{atan2}(\sin\alpha,\cos\alpha)$ applied to the bearing innovation and
+the heading only, never to the range, $P$ or $K$. $R_{tag}=\operatorname{diag}(0.03^2,\ 0.02^2)$.
+
+\lead{Outlier gate.} A camera reading is used only if its normalised innovation squared
+$\text{NIS}=\mathbf e^T S^{-1}\mathbf e \le 9.21$ (the 99\,\% point of $\chi^2_2$). This rejected 8 readings in trial 9
+and none in the other trials.
+
+\lead{Reported distance.} The filter tracks the robot centre; the reported distance and its uncertainty refer to the
+chassis front, like the tape:
+\begin{equation}
+\dest = \lVert \mathbf m - \mathbf p\rVert - \ell_f,\qquad \sigma_d = \sqrt{J P J^T},\quad
+J = \left[-\tfrac{\Delta x}{\sqrt q},\ -\tfrac{\Delta y}{\sqrt q},\ 0,\ 0,\ 0\right].
+\end{equation}
+
+\begin{table}[H]
+\centering\small
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}Xll@{}}
+\rowcolor{kfupm}\hd{Sensor} & \hd{Measurement} & \hd{Corrects} & \hd{Rate}\\
+Wheel odometry \code{/odom} (encoders + IMU, fused by the driver) & speed $v$, turn rate $\omega$ & $v,\omega$ directly;
+  $p_x,p_y$ through $P$ & 10\,Hz\\
+Camera + AprilTag (exteroceptive) & range $d$ to the tag centre & along-track position ($p_x$) & 15\,Hz\\
+Camera + AprilTag & bearing $\varphi$ & heading $\theta$, cross-track $p_y$ & 15\,Hz\\
+ToF sensor \code{range_0} & obstacle distance & not used in the filter (safety stop only) & 10\,Hz\\
+\end{tabularx}
+\caption{Sensor measurements used for correction (spec item 1).}
+\label{tab:sensors}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabular}{@{}lll@{}}
+\rowcolor{kfupm}\hd{Symbol} & \hd{Value} & \hd{Meaning}\\
+$\sigma_a$, $\sigma_\alpha$ & 0.5\,m/s$^2$, 1.0\,rad/s$^2$ & unknown accelerations (process noise through $G$)\\
+$q_p$, $q_\theta$ & $10^{-4}$\,m$^2$/s, $10^{-4}$\,rad$^2$/s & slip the model cannot see\\
+$R_{odom}$ & $(0.02\ \text{m/s})^2$, $(0.03\ \text{rad/s})^2$ & \code{/odom} noise\\
+$R_{tag}$ & $(0.03\ \text{m})^2$, $(0.02\ \text{rad})^2$ & camera range and bearing noise\\
+$P_0$ & $\sigma_p=0.02$\,m, $\sigma_\theta=0.035$\,rad & start placement accuracy\\
+gate & 9.21 & $\chi^2_2$, 99\,\%\\
+\end{tabular}
+\caption{Filter parameters (\code{config/robot.yaml}), identical in all trials.}
+\label{tab:params}
+\end{table}
+
+\isub{\faRoute}{Straight-line motion and stopping}
+The controller uses only the filtered estimate (Figure~\ref{fig:fsm}). It waits for 10 accepted camera fixes, then
+drives with a speed that is proportional to the distance left and limited in speed and acceleration, and steers the
+bearing to zero, which keeps the path straight towards the tag:
+\begin{equation}
+v_{cmd}=\operatorname{clip}\big(0.6\,(\dest-d_{stop}),\ 0.03,\ 0.15\big)\ \text{m/s},\quad |\dot v_{cmd}|\le0.25\ \text{m/s}^2,
+\qquad \omega_{cmd}=\operatorname{clip}(1.0\,\hat\varphi,\ \pm0.30)\ \text{rad/s}.
+\end{equation}
+When $\dest\le d_{stop}$ it brakes, holds still for 2\,s so the estimate settles, and records $d_{est}$, $\sigma_d$ and
+the camera-only and wheels-only distances for comparison.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[node distance=7mm and 13mm]
+  \node[stnode=WAITING] (w) {\stbadge{WAITING}\\[2pt]\footnotesize robot still, filter running, count camera fixes};
+  \node[stnode=DRIVING,right=of w] (d) {\stbadge{DRIVING}\\[2pt]\footnotesize $v\propto\dest-d_{stop}$, steer bearing to 0};
+  \node[stnode=HOLDING,right=of d] (h) {\stbadge{HOLDING}\\[2pt]\footnotesize brake, 2\,s settle};
+  \node[stnode=DONE,below=9mm of h] (n) {\stbadge{DONE}\\[2pt]\footnotesize log $d_{est}$, $\sigma_d$, summary};
+  \draw[tr] (w) -- node[trl,above]{10 fixes} (d);
+  \draw[tr] (d) -- node[trl,above]{$\dest\le0.50$} (h);
+  \draw[tr] (h) -- node[trl,right]{2\,s} (n);
+  \draw[tr,accred] (d.south) |- node[trl,pos=0.75,below]{safety: ToF $<$0.15\,m, travel $>$0.85\,m, 30\,s, arm moved $\rightarrow$ trial invalid} (n.west);
+\end{tikzpicture}
+\caption{Controller states (same colors in the video). No trial ended on a safety condition.}
+\label{fig:fsm}
+\end{figure}

@@ -1,0 +1,85 @@
+%============================ 3. SETUP AND CALIBRATION ========================
+\isec{\faTools}{Experimental Setup and Calibration}
+\label{sec:setup}
+
+\isub{\faCamera}{Camera pose}
+The range calibration is only valid at one arm pose, so the arm is commanded to the saved pose
+$(x,z)=(0.123,0.067)$\,m before every run and the controller refuses to drive if it is more than 6\,mm off.
+Because the tag lies flat, its normal is the floor normal, and the detected tag pose gives the camera height and pitch
+directly: \textbf{0.315\,m and 6.1$^\circ$ down} (Phase 2 had 5.3$^\circ$; the arm had been moved since). The pitch
+$\beta=6.1^\circ$ is used in the level-frame rotation of Section~\ref{sec:method}.
+
+\isub{\faRulerCombined}{Range calibration with the robot driving itself}
+The camera's forward offset $f$ is mapped to the tape distance (chassis front to tag centre) by a straight line
+$d = s f + o$. Instead of placing the robot by hand at five distances, a script
+(\code{scripts/auto_calibrate_range.py}) drives the robot at 5\,cm/s, steering at the tag, and stops at
+1.20, 1.00, 0.80, 0.60 and 0.50\,m; at each stop it averages 5\,s of camera readings. Only the first and last
+positions need the tape; the stops in between are known from odometry and serve as a check.
+
+\begin{table}[H]
+\centering\small
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabular}{@{}lrrrl@{}}
+\rowcolor{kfupm}\hd{Stop} & \hd{Tape / odometry (m)} & \hd{Camera $f$ (m)} & \hd{Spread (mm)} & \hd{Use}\\
+start & 1.200 (tape) & 1.3219 & 1.4 & fit anchor\\
+1 & 0.9915 (odometry) & 1.1190 & 1.3 & check: fit residual $+3.2$\,mm\\
+2 & 0.7787 (odometry) & 0.9120 & 0.6 & check: fit residual $+6.6$\,mm\\
+last & 0.470 (tape) & 0.6003 & 0.2 & fit anchor\\
+\end{tabular}
+\caption{Range calibration, run 2 (\code{results/calibration/}). The fit through the two tape anchors gives
+$s=1.0115$, $o=-0.1372$\,m for a 155\,mm tag size; with the measured 154\,mm the camera offsets scale by 154/155, so
+$s=1.0181$ is used with the same $o$.}
+\label{tab:calib}
+\end{table}
+
+\begin{itemize}
+  \item \textbf{Run 1 was discarded.} Without steering the robot drifted on the rug and ended with the tag
+        18$^\circ$ to the side; the camera gives the forward offset while the tape measures the diagonal, about
+        2\,cm different at that angle. Steering was added to the script for run 2 (bearing stayed within
+        0.2 to 0.4$^\circ$).
+  \item \textbf{Run 2 had a Wi-Fi drop} of 3\,s during the leg to 0.60\,m; the robot kept its last speed and overshot
+        to 0.47\,m, and \code{/odom} restarted from zero, so odometry after the drop was not used. This is why the
+        fit uses the two tape anchors only.
+  \item The two odometry check points sit 3 and 7\,mm above the fit, i.e.\ odometry over-reads the distance travelled
+        by about 1.5\,\% on this rug (run 1 gave 2.1\,\%). This is the along-track drift the camera has to correct.
+\end{itemize}
+
+\isub{\faWrench}{Odometry: two driver problems found and fixed}
+\label{sec:odomfix}
+Three test drives (trial 0, kept in \code{results/test_runs/}) were made before the 10 trials.
+
+\begin{table}[H]
+\centering\small
+\setlength{\tabcolsep}{4pt}
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}Xrrrrr@{}}
+\rowcolor{kfupm}\hd{Test} & \hd{Odometry source} & \hd{$d_{est}$} & \hd{camera} & \hd{wheels only} & \hd{tape} & \hd{$e$ (mm)}\\
+1 & \code{/odom} twist ($v,\omega$ fields) & 0.514 & 0.535 & 0.158 & 0.540 & $-26$\\
+2 & speed from \code{/odom} pose; one glitch at the stop & 0.614 & 0.500 & 0.507 & 0.520 & $+94$\\
+3 & pose + plausibility guard (final setting) & 0.497 & 0.497 & 0.520 & 0.490 & $+7$\\
+\end{tabularx}
+\caption{Test drives that shaped the odometry input (distances in m).}
+\label{tab:testruns}
+\end{table}
+
+\begin{itemize}
+  \item \textbf{Twist is wrong and late.} At a true speed of 0.15\,m/s (from the camera) the twist field read
+        0.18 to 0.21\,m/s, and at 0.03\,m/s it read 3 to 5 times too much, lagging by more than a second. Integrated, it
+        put the robot 38\,cm past its real position. The \code{/odom} \emph{pose}, in contrast, agreed with the camera to
+        1 to 2\,\% in both calibration runs, so the speed and turn rate are now differentiated from consecutive poses
+        (\code{odom_source: pose}).
+  \item \textbf{Pose glitches.} While standing still, one pose step gave $-0.72$\,m/s. The EKF moved 11\,cm, and the
+        $\chi^2$ gate then rejected every correct camera reading (NIS 12.5) because they disagreed with the corrupted
+        estimate. A plausibility guard now skips any odometry step faster than 0.40\,m/s or 1.5\,rad/s (more than
+        twice what this controller ever commands); skipped steps are counted in \code{n_odom_glitches}.
+\end{itemize}
+
+\isub{\faClipboardList}{Protocol of a trial}
+\begin{enumerate}
+  \item Place the robot on the taped start marks (front edge on the 1.20\,m line, nose at the tag); arm at the saved pose.
+  \item Run \code{ros2 launch rm_odom_ekf phase3.launch.py trial:=N}. Do not touch the robot until \stbadge{DONE}.
+  \item Without moving the robot, tape from the middle of the chassis front to the tag centre; record with
+        \code{scripts/add_measurement.py N} \textit{reading}.
+  \item A trial is invalid if a safety stop ends it; it is then repeated with the same $N$.
+\end{enumerate}
+The configuration (\code{config/robot.yaml}) was not changed during the 10 trials.

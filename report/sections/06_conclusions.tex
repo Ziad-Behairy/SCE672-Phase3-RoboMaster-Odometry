@@ -1,0 +1,64 @@
+%============================ 6. CONCLUSIONS ==================================
+\isec{\faFlagCheckered}{Conclusions}
+\label{sec:conclusions}
+
+\begin{keybox}{\faCheckCircle\ \ Findings}
+\begin{itemize}
+  \item The RoboMaster detected the floor tag, drove straight to it from 1.20\,m and stopped before it in 10 of 10
+        trials, using a 5-state EKF predicted with a unicycle model and corrected by wheel odometry and by the tag's
+        range and bearing.
+  \item The final distance estimate agreed with the tape to \textbf{0.28\,cm MAE}, with a \textbf{range of 0.96\,cm}
+        ($-0.48$ to $+0.48$\,cm), no measurable bias and $\sigma=0.32$\,cm, about the resolution of the tape itself.
+  \item Wheel odometry alone ended 1.98\,cm off on average and up to 5.8\,cm, because of slip on the rug and pose
+        glitches in the driver.
+  \item The camera \emph{range} is what fixes the along-track error. With bearing only the error rises to 1.98\,cm,
+        close to having no camera at all (2.53\,cm), which matches the observability argument of Lecture 12A.
+  \item Prediction provides the continuous, uncertainty-aware estimate that the controller and the outlier gate rely
+        on, and it carries the estimate through camera gaps; correction keeps it from drifting.
+\end{itemize}
+\end{keybox}
+
+\lead{What made the difference in practice.} Three problems were found and fixed before the trials, each visible in
+the logs: the \code{/odom} twist field is late and too large (speed is now taken from the pose), the pose has rare
+impossible jumps (now skipped by a plausibility guard), and a 154\,mm flat tag is unreliable beyond 1.2\,m with this
+camera (start moved to 1.20\,m, stop to 0.50\,m).
+
+\lead{Next steps.} Tighten $R_{tag}$ to about 1\,cm so that the reported $\sigma_d$ matches the observed spread; add a
+final slow approach to remove the 1.5 to 2\,cm coasting at the stop; check absolute accuracy with an instrument independent
+of the calibration (for example a second camera or a laser distance meter).
+
+%============================ APPENDIX ========================================
+\appendix
+\isec{\faGithub}{Code, Data and Reproduction}
+\label{sec:repro}
+
+\begin{table}[H]
+\centering\small
+\rowcolors{2}{kfupmlight}{white}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\rowcolor{kfupm}\hd{Path} & \hd{Content}\\
+\code{src/rm_odom_ekf/rm_odom_ekf/ekf.py} & the EKF: $f$, $F$, $G$, $H_{odom}$, $h$, $H_{tag}$, gate, update, wrap\\
+\code{.../phase3_node.py} & ROS node: predict, odometry update, camera update, control, logging\\
+\code{.../controller.py}, \code{tag_detector.py} & controller states; AprilTag range and bearing\\
+\code{src/rm_odom_ekf/config/robot.yaml} & every parameter used in the trials\\
+\code{src/rm_odom_ekf/test/} & 23 unit tests, including central-difference checks of $F$, $G$, $H_{tag}$\\
+\code{results/trials/} & 10 trials: \code{steps.csv} (20\,Hz) and \code{summary.json}\\
+\code{results/test_runs/}, \code{results/calibration/} & test drives, repeated first attempts, calibration data\\
+\code{scripts/analyze_trials.py} & Table~\ref{tab:trials}, statistics, Figures~\ref{fig:scatter}--\ref{fig:stats}\\
+\code{scripts/replay_ekf.py} & sensor-removal study, Table~\ref{tab:replay}\\
+\code{theory/FORMULA_MAP.md} & every equation of this report and the code line that implements it\\
+\code{video_tools/} & demo video: AR overlay, 3D replay, dashboard\\
+\end{tabularx}
+\caption{Repository: \link{\repoURL}{\repoURL}. Demo video: \link{\videolink}{\videolink}.}
+\end{table}
+
+\begin{lstlisting}[style=sh]
+# unit tests (no robot needed)
+cd src/rm_odom_ekf && python3 -m pytest -q test          # 23 passed
+# one trial on the robot (driver running)
+ros2 launch rm_odom_ekf phase3.launch.py trial:=N
+python3 scripts/add_measurement.py N 0.492              # tape reading in metres
+# statistics, figures and the replay study
+python3 scripts/analyze_trials.py
+python3 scripts/replay_ekf.py
+\end{lstlisting}
