@@ -48,7 +48,7 @@ class ApproachTagNode(Node):
         # --- experiment setup (must not change between trials)
         self.trial_number = param('trial', 0)
         results_dir = param('results_dir', '~/SCE672-Phase3-RoboMaster-Odometry/results/trials')
-        self.start_distance = param('start_distance', 1.50)
+        self.start_distance = param('start_distance', 1.20)
         self.front_offset = param('front_offset', 0.16)
         rate_hz = param('control_rate', 20.0)
 
@@ -57,6 +57,8 @@ class ApproachTagNode(Node):
         self.odom_speed_sign = param('odom_v_sign', -1.0)
         self.odom_turn_sign = param('odom_w_sign', 1.0)
         self.odom_source = param('odom_source', 'twist')   # 'pose' if the driver leaves twist empty
+        self.odom_max_speed = param('odom_max_speed', 0.40)  # m/s, pose mode: faster = driver glitch, skipped
+        self.odom_max_turn = param('odom_max_turn', 1.50)    # rad/s, same
 
         # --- camera handling
         self.use_tag_range = param('use_tag_range', True)
@@ -75,7 +77,7 @@ class ApproachTagNode(Node):
 
         # --- controller
         drive = DriveSettings(
-            stop_distance=param('stop_distance', 0.40), max_speed=param('max_speed', 0.15),
+            stop_distance=param('stop_distance', 0.50), max_speed=param('max_speed', 0.15),
             min_speed=param('min_speed', 0.03), slowdown_gain=param('slowdown_gain', 0.6),
             max_accel=param('max_accel', 0.25), steer_gain=param('steer_gain', 1.0),
             max_turn_rate=param('max_turn_rate', 0.30), fixes_before_start=param('fixes_before_start', 10),
@@ -126,6 +128,7 @@ class ApproachTagNode(Node):
         self.odom_updates = 0
         self.tag_updates = 0
         self.tag_rejected = 0
+        self.odom_glitches = 0
         self.last_gain = None
         self.camera_at_rest = []            # camera distances while stopped, for the camera-only baseline
         self.drive_started_at = None
@@ -161,6 +164,12 @@ class ApproachTagNode(Node):
             dt = stamp - prev[0]
             forward = (pos.x - prev[1]) * math.cos(prev[3]) + (pos.y - prev[2]) * math.sin(prev[3])
             raw_speed, raw_turn = forward / dt, wrap_angle(yaw - prev[3]) / dt
+            if abs(raw_speed) > self.odom_max_speed or abs(raw_turn) > self.odom_max_turn or dt > 0.5:
+                # Impossible for this robot (it is commanded at most max_speed): a pose glitch from the driver
+                # (trial 0, 2026-11-15: -0.72 m/s while standing still) or a Wi-Fi reconnect that restarted
+                # /odom from zero. Skip this pair; the next message continues from the new pose.
+                self.odom_glitches += 1
+                return
         else:
             raw_speed, raw_turn = msg.twist.twist.linear.x, msg.twist.twist.angular.z
             prev, self.prev_odom = self.prev_odom, (stamp, 0.0, 0.0, 0.0)
@@ -309,6 +318,8 @@ class ApproachTagNode(Node):
             'n_odom_updates': self.odom_updates,
             'n_tag_updates': self.tag_updates,
             'n_tag_rejected': self.tag_rejected,
+            'n_odom_glitches': self.odom_glitches,
+            't_start_unix': self.t_start,      # wall clock of t = 0 in steps.csv (video sync)
             'drive_time_s': None if self.drive_started_at is None else self.now() - self.drive_started_at,
         }
         path = self.recorder.write_summary(final)

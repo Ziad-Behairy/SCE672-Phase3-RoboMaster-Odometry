@@ -1,0 +1,54 @@
+{
+  "start_tape_m": 1.2,
+  "time": "2026-11-15T02:28:39",
+  "secs": 5.0,
+  "rows": [
+    {
+      "label": "start 1.20",
+      "odom_m": 5.099019513592441e-05,
+      "n": 76,
+      "forward_mean_m": 1.3219420336828678,
+      "forward_std_m": 0.0014371373065134663,
+      "bearing_deg": 3.2374186682991137
+    },
+    {
+      "label": "nominal 1.00",
+      "odom_m": 0.20846672300393662,
+      "n": 75,
+      "forward_mean_m": 1.1190264833433619,
+      "forward_std_m": 0.0012580290964636007,
+      "bearing_deg": 0.4391061456176121
+    },
+    {
+      "label": "nominal 0.80",
+      "odom_m": 0.42127003750563613,
+      "n": 75,
+      "forward_mean_m": 0.9119965200439362,
+      "forward_std_m": 0.0006470608310243266,
+      "bearing_deg": 0.18454998588679217
+    },
+    {
+      "label": "nominal 0.60",
+      "odom_m": 0.7374556394116192,
+      "n": 0,
+      "forward_mean_m": null,
+      "forward_std_m": null,
+      "bearing_deg": null
+    },
+    {
+      "label": "nominal 0.50",
+      "odom_m": 0.7375499527489646,
+      "n": 11,
+      "forward_mean_m": 0.6002586059273103,
+      "forward_std_m": 0.00019265548835619637,
+      "bearing_deg": -0.2342108991703012
+    }
+  ],
+  "final_tape_m": 0.47,
+  "note": "Wi-Fi dropped ~3 s during the 0.60 leg (02:28:28-31): odom after it is invalid. Fit uses the two tape anchors only; odom points are a check (+3, +7 mm -> odom over-reports ~1.5 %).",
+  "fit": {
+    "range_scale": 1.0115,
+    "range_offset": -0.1372,
+    "method": "2 tape anchors (1.20, 0.47 m)"
+  }
+}

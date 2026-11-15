@@ -18,7 +18,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('trial', description='trial number 1..10'),
         DeclareLaunchArgument('results_dir', default_value='~/SCE672-Phase3-RoboMaster-Odometry/results/trials'),
-        Node(package='rm_odom_ekf', executable='tag_detector', parameters=[cfg], output='screen'),
+        DeclareLaunchArgument('save_frames_dir', default_value='',
+                              description='if set, the detector saves every annotated camera frame here (video)'),
+        Node(package='rm_odom_ekf', executable='tag_detector', output='screen',
+             parameters=[cfg, {'save_frames_dir': LaunchConfiguration('save_frames_dir')}]),
         Node(package='rm_odom_ekf', executable='phase3_ekf', output='screen', emulate_tty=True,
              parameters=[cfg, {'trial': trial, 'results_dir': LaunchConfiguration('results_dir')}]),
     ])

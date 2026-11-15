@@ -1,0 +1,42 @@
+{
+  "start_tape_m": 1.2,
+  "time": "2026-11-15T02:15:16",
+  "secs": 5.0,
+  "rows": [
+    {
+      "label": "start 1.20",
+      "odom_m": 6.403124237434539e-05,
+      "n": 75,
+      "forward_mean_m": 1.3338020732720117,
+      "forward_std_m": 0.0010838938525280424
+    },
+    {
+      "label": "nominal 1.00",
+      "odom_m": 0.20158438555602465,
+      "n": 75,
+      "forward_mean_m": 1.1366600687253825,
+      "forward_std_m": 0.0007064350831830044
+    },
+    {
+      "label": "nominal 0.80",
+      "odom_m": 0.40358443936802124,
+      "n": 75,
+      "forward_mean_m": 0.9381315142679061,
+      "forward_std_m": 0.00031110671486608225
+    },
+    {
+      "label": "nominal 0.60",
+      "odom_m": 0.6181858471366034,
+      "n": 75,
+      "forward_mean_m": 0.7263570231311317,
+      "forward_std_m": 0.00032058707511998917
+    },
+    {
+      "label": "nominal 0.40",
+      "odom_m": 0.8070050359818085,
+      "n": 0,
+      "forward_mean_m": null,
+      "forward_std_m": null
+    }
+  ]
+}

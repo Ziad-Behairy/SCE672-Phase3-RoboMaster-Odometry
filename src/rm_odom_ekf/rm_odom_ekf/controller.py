@@ -17,7 +17,7 @@ WAITING, DRIVING, HOLDING, DONE = 'WAITING', 'DRIVING', 'HOLDING', 'DONE'
 
 @dataclass
 class DriveSettings:
-    stop_distance: float = 0.40       # m, chassis front to tag. Same value for every trial
+    stop_distance: float = 0.50       # m, chassis front to tag. Same value for every trial
     max_speed: float = 0.15           # m/s
     min_speed: float = 0.03           # m/s, the chassis hardly moves below this
     slowdown_gain: float = 0.6        # 1/s, target speed = gain * distance still to go

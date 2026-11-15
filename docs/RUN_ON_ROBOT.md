@@ -38,13 +38,13 @@ same `colcon build` line. With `--symlink-install` a rebuild takes a few seconds
    the corners. The camera measures to the tag centre, so **every distance in this project goes to the tag centre**.
 2. Pick the **reference point** on the robot: the **middle of the front edge of the chassis** (camera side). Use this
    one point for every distance.
-3. From the **tag centre**, tape **1.50 m** along the floor and mark a start line at right angles to that path.
+3. From the **tag centre**, tape **1.20 m** along the floor and mark a start line at right angles to that path.
 4. Put the robot on the line so its reference point is on the mark and its nose points at the tag. Put tape at both
    front wheels so you can put it back exactly the same way every time. Photograph the setup.
 5. Before going further, check that the tag is seen from the start line (step A7 checks this properly):
-   `ros2 topic echo /tag/range_bearing`. Phase 2 found the 155 mm floor tag only gives about 4 detections/s at 1.5 m.
-   That is enough, because the filter keeps predicting between camera fixes. If it is seen **not at all** at 1.50 m,
-   tell me before changing anything: the fix is either a bigger print or a 1.20 m start.
+   `ros2 topic echo /tag/range_bearing`. At 1.5 m the flat 155 mm tag is only ~10 px tall and detection came and went (2026-11-15), so the start is 1.20 m.
+   The filter keeps predicting between camera fixes, so a few detections/s is enough. If it is seen **not at all** at 1.20 m,
+   check the lighting and that the tag is flat; the next fix is a bigger print.
 
 ## A4. Measure `front_offset` (robot centre → chassis front)
 `/odom` and the filter track the **robot centre**, which is the midpoint between the four wheel axles.
@@ -91,17 +91,18 @@ Then turn slowly to the left: `"{angular: {z: 0.3}}"`. `angular.z` should be **p
    ros2 run rm_odom_ekf tag_detector --ros-args --params-file ~/SCE672-Phase3-RoboMaster-Odometry/src/rm_odom_ekf/config/robot.yaml
    ```
 2. Put the robot facing the tag with the reference point at a taped distance **to the tag centre**. At each of
-   **0.40, 0.70, 1.00, 1.30, 1.50 m**, keep the robot still and run (terminal 3):
+   **0.50, 0.60, 0.80, 1.00, 1.20 m**, keep the robot still and run (terminal 3):
    ```bash
    cd ~/SCE672-Phase3-RoboMaster-Odometry
-   python3 scripts/calibrate_range.py --tape 0.40
+   python3 scripts/calibrate_range.py --tape 0.50
    ```
    Each command records 5 s and appends one row to `results/calibration/tag_range.csv`. The line also prints
-   detections/s; write it down for 0.40 and 1.50 m.
-   - **NOT DETECTED at 1.50 m**: check the lighting and that the tag is flat, then tell me (bigger print or 1.20 m start).
-   - **NOT DETECTED at 0.40 m**: the tag has dropped below the camera's view. That is allowed: the filter keeps
-     predicting with odometry for the last few centimetres, but `d_cam_final` (the camera-only baseline) will be
-     empty. Tell me and we can move the stop to 0.50 m instead.
+   detections/s; write it down for 0.50 and 1.20 m.
+   - **NOT DETECTED at 1.20 m**: check the lighting and that the tag is flat (a bigger print is the next fix).
+   - The camera loses the floor tag below about **0.48 m** (it drops out of the bottom of the image), which is why
+     the stop is 0.50 m.
+   - **Faster option:** `python3 scripts/auto_calibrate_range.py drive --start 1.20` drives itself to every
+     distance (steering at the tag) and needs only two tape readings, the start and the final stop.
 3. Fit and copy the result into `robot.yaml`:
    ```bash
    python3 scripts/calibrate_range.py --fit
@@ -126,7 +127,7 @@ On the box the camera still sees the tag at the same distance, so expect the run
 That's fine; this is only to check the wiring.
 
 ## A9. One test drive on the floor
-Run one real drive with `trial:=0` and check the robot stops about 0.40 m from the tag and doesn't swerve. Delete it.
+Run one real drive with `trial:=0` and check the robot stops about 0.50 m from the tag and doesn't swerve. Delete it.
 Commit the calibration:
 ```bash
 git add src/rm_odom_ekf/config/robot.yaml results/calibration && git commit -m "Calibration for Phase 3" && git push

@@ -91,12 +91,12 @@ shrinks it, and the gain K decides how much each sensor is trusted."
 **Idea:** a careful driver with four modes: WAITING (don't move until the tag has been seen 10 times),
 DRIVING, HOLDING (stopped, wait 2 s), DONE.
 
-- **L19 `DriveSettings`**: the rules: stop at 0.40 m, top speed 0.15 m/s, gentle acceleration, safety limits.
+- **L19 `DriveSettings`**: the rules: stop at 0.50 m, top speed 0.15 m/s, gentle acceleration, safety limits.
 - **L54 `update`**: called every tick, returns `(speed, turn_rate)`.
   - Target speed = `slowdown_gain × distance still to go`, kept between min and max speed.
   - **L81** ramps toward that target gently, so the wheels don't slip at the start.
   - **L82** steers with the filtered bearing, so steering still works when the camera blinks.
-- **L99 `_why_stop`**: the normal stop is "filtered distance ≤ 0.40 m". ToF, distance travelled and a timer are
+- **L99 `_why_stop`**: the normal stop is "filtered distance ≤ 0.50 m". ToF, distance travelled and a timer are
   only safety stops.
 - **L89 `emergency_stop`**: used by the node if the camera arm moves.
 - **L112 `bearing_to`**: angle from the nose to the tag, wrapped.

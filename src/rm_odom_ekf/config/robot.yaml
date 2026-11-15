@@ -4,28 +4,30 @@ tag_detector:
   ros__parameters:
     # The tag lies flat on the floor (same T3 print as Phase 2). Distances are to the tag CENTRE.
     target_id: 3               # tag36h11 ID of the printed tag
-    tag_size: 0.155            # P2: black edge measured with a ruler (m). Re-check it
+    tag_size: 0.154            # black edge, measured with a tape 2026-11-15
     quad_decimate: 1.0
-    camera_pitch_deg: 5.3      # P2 at the saved arm pose. CHECK: the detector log prints it from the floor tag
-    range_scale: 1.0           # MEASURE: python3 scripts/calibrate_range.py --fit
-    range_offset: -0.162       # P2 floor-tag calibration. MEASURE again with the same fit
+    camera_pitch_deg: 6.1      # measured 2026-11-15 from the floor tag at the saved arm pose (height 0.315 m)
+    range_scale: 1.0181        # 2026-11-15 run 2 (steered), tape anchors 1.20 + 0.47 m (fit 1.0115 at tag_size 0.155, x 155/154)
+    range_offset: -0.1372      # same fit (camera forward -> chassis front)
 
 phase3_ekf:
   ros__parameters:
     # experiment (keep identical for all trials)
-    start_distance: 1.50       # m, tape: chassis front -> tag centre at the start
-    stop_distance: 0.40        # m, chassis front -> tag centre
-    front_offset: 0.16         # MEASURE: robot centre -> chassis front (m)
+    start_distance: 1.20       # m, tape: chassis front -> tag centre. 1.20 (not 1.50): the flat 155 mm tag is only ~10 px tall at 1.5 m and detection was unreliable (2026-11-15)
+    stop_distance: 0.50        # m, chassis front -> tag centre. 0.50 (not 0.40): the camera loses the floor tag below ~0.48 m
+    front_offset: 0.16         # robot centre -> chassis front (m): URDF wheels at +-0.100, chassis modules at +-0.157; DJI length 320 mm
     control_rate: 20.0
     # robot conventions
     drive_sign: -1.0           # P2: the driver's +x points AWAY from the camera side
     odom_v_sign: -1.0          # CHECK: docs/RUN_ON_ROBOT.md, step 4 (odom speed must be + toward the tag)
     odom_w_sign: 1.0
-    odom_source: twist         # 'pose' if /odom twist is all zeros on your driver
+    odom_source: pose          # 2026-11-15 trial 0: /odom twist lags and over-reads (0.21 at 0.15 m/s, 3-5x at 0.03); pose matched the camera within 1-2 %
+    odom_max_speed: 0.40       # m/s, pose mode: a faster reading is a driver glitch and is skipped
+    odom_max_turn: 1.50        # rad/s, same
     # camera measurement
     use_tag_range: true        # false = bearing only (comparison run for the report)
     tag_max_age: 0.30
-    min_decision_margin: 10.0  # a small floor tag at 1.5 m gives weak detections; CHECK the margin at 1.5 m
+    min_decision_margin: 10.0  # a small floor tag gives weak detections far away; CHECK the margin at the start
     # EKF noise, standard deviations
     sigma_accel: 0.5           # m/s^2   unknown linear acceleration (process noise via G)
     sigma_alpha: 1.0           # rad/s^2 unknown angular acceleration
